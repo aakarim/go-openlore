@@ -1,0 +1,12 @@
+{
+  "skills": {
+    "teach": {
+      "description": "Learn how to set up OpenLore for your project",
+      "file": "teach.md"
+    },
+    "agents": {
+      "description": "Get an AGENTS.md snippet for your AI agents",
+      "file": "agents.md"
+    }
+  }
+}

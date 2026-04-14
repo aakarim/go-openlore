@@ -1,0 +1,86 @@
+# OpenLore Configuration
+# Place this file as openlore.yml in your project root,
+# or specify a path with --config / -c.
+
+# Config file version. Used for migration between config formats.
+version: "1"
+
+# ── Server ────────────────────────────────────────────
+
+# SSH server port. Agents connect here.
+port: 2222
+
+# Prometheus metrics port. Set to 0 to disable.
+metrics_port: 3000
+
+# HTTP front page port for human users. Set to 0 to disable.
+# http_port: 8080
+
+# TLS certificate and key for the HTTP server (optional).
+# tls_cert: ./cert.pem
+# tls_key: ./key.pem
+
+# Path to the SSH host key. Auto-generated on first run if missing.
+# Uses ed25519 by default.
+host_key_path: .ssh/openlore_ed25519
+
+# Default working directory for shell sessions.
+# This is the directory the shell starts in when a client connects.
+# default_cwd: /openlore
+
+# ── Authentication ────────────────────────────────────
+
+# Allow connections without SSH keys.
+# Set to false for production / multi-tenant setups,
+# and provide a lore.json with --auth.
+allow_keyless: true
+
+# Path to lore.json for identity-based access control.
+# See lore.json.example for the format.
+# auth_file: lore.json
+
+# What happens when an SSH key connects but doesn't match any identity
+# in lore.json. Options:
+#   "allow"  — grant access using the "default" lore spec (default)
+#   "deny"   — reject with a standard publickey authentication error
+unknown_identity: allow
+
+# ── Content ───────────────────────────────────────────
+
+# Only serve files matching these glob patterns.
+# If empty, all files are served (except ignored ones).
+files:
+  allowed:
+    - "*.md"
+    - "*.txt"
+    - "*.yml"
+    - "*.yaml"
+    - "*.json"
+    - "*.rst"
+    - "*.adoc"
+  ignore:
+    - ".git"
+    - ".svn"
+    - "node_modules"
+    - "__pycache__"
+    - ".env"
+    - ".env.*"
+    - "*.key"
+    - "*.pem"
+    - "*.p12"
+    - ".DS_Store"
+
+# ── Skills ────────────────────────────────────────────
+
+# Directory containing runtime skills (skills.json + markdown files).
+# Embedded skills in assets/skills/ are always loaded.
+# skills_dir: ./skills
+
+# ── Display ───────────────────────────────────────────
+
+# Message of the day shown when a client connects.
+# Supports multiple lines with YAML block scalar.
+motd: |
+  Welcome to the docs server.
+  Type 'tree -L 1 /' to see available documentation.
+  Type 'skills' to see available agent commands.

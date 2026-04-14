@@ -1,0 +1,19 @@
+# Caddy reverse proxy configuration for OpenLore
+#
+# This forwards requests to /agents on your existing site to the
+# OpenLore HTTP front page, while proxying SSH connections separately.
+#
+# Usage:
+#   caddy run --config Caddyfile
+
+example.com {
+    # Forward /agents to the OpenLore HTTP front page
+    handle /agents* {
+        reverse_proxy localhost:8080
+    }
+
+    # Everything else goes to your existing backend
+    handle {
+        reverse_proxy localhost:3000
+    }
+}

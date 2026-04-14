@@ -1,0 +1,61 @@
+{
+  "lore": {
+    "default": {
+      "paths": [
+        "/docs/public",
+        "/docs/getting-started.md"
+      ]
+    },
+    "frontend": {
+      "paths": [
+        "/docs/frontend",
+        "/docs/shared",
+        "/docs/components"
+      ]
+    },
+    "backend": {
+      "paths": [
+        "/docs/backend",
+        "/docs/api",
+        {"internal/db-schema": "/docs/database"},
+        "/docs/shared"
+      ]
+    },
+    "ops": {
+      "paths": [
+        "/docs/infrastructure",
+        {"internal/runbooks/on-call.md": "/docs/runbooks/on-call.md"},
+        "/docs/deployment"
+      ]
+    },
+    "full-access": {
+      "paths": ["/"]
+    }
+  },
+  "identities": [
+    {
+      "name": "frontend-agent",
+      "comment": "Claude agent for frontend team",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleFrontendKeyHere frontend-agent",
+      "lore": "frontend"
+    },
+    {
+      "name": "backend-agent",
+      "comment": "GPT agent for backend services",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBackendKeyHere backend-agent",
+      "lore": "backend"
+    },
+    {
+      "name": "ops-agent",
+      "comment": "Infrastructure and deployment docs",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOpsKeyHere ops-agent",
+      "lore": "ops"
+    },
+    {
+      "name": "read-all",
+      "comment": "Full read access to all documentation",
+      "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleReadAllKeyHere admin",
+      "lore": "full-access"
+    }
+  ]
+}

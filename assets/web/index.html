@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenLore — Serve your docs to AI agents</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --green: #3fb950;
+            --code-bg: #0d1117;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+        header {
+            text-align: center;
+            padding: 3rem 0 2rem;
+        }
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 0.5rem;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        .tagline {
+            color: var(--text-muted);
+            font-size: 1.2rem;
+        }
+        .hero-code {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 2rem 0;
+            overflow-x: auto;
+        }
+        .hero-code pre {
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            line-height: 1.8;
+        }
+        .hero-code .comment { color: var(--text-muted); }
+        .hero-code .cmd { color: var(--green); }
+        .hero-code .flag { color: var(--accent); }
+        section {
+            margin: 3rem 0;
+        }
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: var(--accent);
+        }
+        h3 {
+            font-size: 1.1rem;
+            margin: 1.5rem 0 0.5rem;
+        }
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+        code {
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            background: var(--surface);
+            padding: 0.15em 0.4em;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+        pre {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+        }
+        .card h3 { margin-top: 0; color: var(--text); }
+        .card p { margin-bottom: 0; font-size: 0.9rem; }
+        footer {
+            text-align: center;
+            padding: 3rem 0;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+            margin-top: 3rem;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); text-decoration: underline; }
+        .badge {
+            display: inline-block;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.8rem;
+            margin: 0.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">📜</div>
+            <h1>OpenLore</h1>
+            <p class="tagline">Serve your docs to AI agents over SSH</p>
+        </header>
+
+        <div class="hero-code">
+            <pre><span class="comment"># Teach your agent how to use OpenLore</span>
+<span class="cmd">ssh</span> <span class="flag">openlore.sh</span> teach <span class="flag">|</span> your-agent-cli
+
+<span class="comment"># Add documentation access to your AGENTS.md</span>
+<span class="cmd">ssh</span> <span class="flag">openlore.sh</span> agents <span class="flag">>></span> AGENTS.md
+
+<span class="comment"># Explore documentation</span>
+<span class="cmd">ssh</span> <span class="flag">openlore.sh</span> <span class="cmd">tree</span> -L 2 /</pre>
+        </div>
+
+        <section>
+            <h2>What is OpenLore?</h2>
+            <p>
+                AI agents are trained on bash. They explore code with <code>ls</code>, <code>cat</code>, <code>grep</code>, and <code>find</code>.
+                OpenLore gives them the same interface for your documentation — a read-only bash shell over SSH.
+            </p>
+            <p>
+                No MCP servers. No RAG pipelines. No copy-pasting into context windows.
+                Just SSH.
+            </p>
+        </section>
+
+        <section>
+            <h2>For Agent Developers</h2>
+            <p>Pipe the <code>teach</code> skill directly to your agent to set up documentation access:</p>
+            <pre>ssh openlore.sh teach | your-agent-cli</pre>
+            <p>The <code>teach</code> skill walks your agent through:</p>
+            <div class="grid">
+                <div class="card">
+                    <h3>Pull &amp; Embed</h3>
+                    <p>Clone the repo, drop your docs in <code>assets/lore/</code>, build a single binary with everything baked in.</p>
+                </div>
+                <div class="card">
+                    <h3>Access Control</h3>
+                    <p>Set up <code>lore.json</code> with per-agent path access — different agents see different docs.</p>
+                </div>
+                <div class="card">
+                    <h3>Distribute</h3>
+                    <p>Share the binary. Anyone who runs it gets an SSH server with your documentation. Agents connect and explore.</p>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>For Products &amp; Teams</h2>
+            <p>
+                Ship your documentation as a single binary that agents can connect to.
+                Use the GitHub Action to automatically build and release binaries whenever your docs change.
+            </p>
+            <pre># In your CI pipeline
+- uses: aakarim/openlore@v1
+  with:
+    docs-dir: ./docs
+    config: ./openlore.yml</pre>
+            <p>
+                Your users' agents connect via SSH — no API keys, no client libraries, no new protocols.
+                Just <code>ssh -p 2222 docs.yourproduct.com "cat /docs/api.md"</code>.
+            </p>
+        </section>
+
+        <section>
+            <h2>Quick Start</h2>
+            <pre># Install
+go install github.com/aakarim/go-openlore/cmd/openlore@latest
+
+# Serve a directory
+openlore ./docs
+
+# Connect
+ssh -p 2222 localhost
+
+# Or run commands directly
+ssh -p 2222 localhost "grep -r 'authentication' /docs"</pre>
+        </section>
+
+        <section>
+            <h2>The Vision</h2>
+            <p>
+                We're building toward a world where agents can access project knowledge as easily as they access code.
+                OpenLore uses Go's <code>embed</code> package to bake docs into binaries — making knowledge truly portable and distributable.
+            </p>
+            <p>
+                Agents sharing knowledge with other agents. Products sharing documentation with any agent.
+                Multi-project systems where information flows freely. Open distribution of lore.
+            </p>
+        </section>
+
+        <footer>
+            <p>
+                <a href="https://github.com/aakarim/go-openlore">GitHub</a> · MIT License
+            </p>
+        </footer>
+    </div>
+</body>
+</html>

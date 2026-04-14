@@ -1,0 +1,45 @@
+package openlore
+
+import "github.com/aakarim/go-openlore/internal/config"
+
+// Option is a functional option for configuring the server.
+type Option = config.Option
+
+// FilesConfig controls which files are served.
+type FilesConfig = config.FilesConfig
+
+// FolderConfig defines an additional named folder mount.
+type FolderConfig = config.FolderConfig
+
+// AuthConfig is loaded from auth.json.
+type AuthConfig = config.AuthConfig
+
+// LoreSpec defines a named set of path mappings.
+type LoreSpec = config.LoreSpec
+
+// PathMapping represents a path entry.
+type PathMapping = config.PathMapping
+
+// AuthIdentity defines a user identity with access to a lore spec.
+type AuthIdentity = config.AuthIdentity
+
+// Configuration options re-exported for external consumers.
+var (
+	WithConfigFile      = config.WithConfigFile
+	WithEmbeddedConfig  = config.WithEmbeddedConfig
+	WithPort            = config.WithPort
+	WithMetricsPort     = config.WithMetricsPort
+	WithHostKeyPath     = config.WithHostKeyPath
+	WithAllowKeyless    = config.WithAllowKeyless
+	WithDefaultCwd      = config.WithDefaultCwd
+	WithMOTD            = config.WithMOTD
+	WithMOTDFile        = config.WithMOTDFile
+	WithAuthFile        = config.WithAuthFile
+	WithAllowedPatterns = config.WithAllowedPatterns
+	WithIgnorePatterns  = config.WithIgnorePatterns
+	WithLogger          = config.WithLogger
+	WithSkillsDir       = config.WithSkillsDir
+	WithHTTPPort        = config.WithHTTPPort
+	WithTLS             = config.WithTLS
+	LoadAuthConfig      = config.LoadAuthConfig
+)

@@ -1,0 +1,120 @@
+name: 'Build OpenLore Binary'
+description: 'Build an OpenLore binary with your docs embedded for distribution to AI agents'
+branding:
+  icon: 'book-open'
+  color: 'blue'
+
+inputs:
+  docs-dir:
+    description: 'Path to documentation directory to embed'
+    required: true
+  config:
+    description: 'Path to openlore.yml config file (optional)'
+    required: false
+    default: ''
+  auth:
+    description: 'Path to lore.json auth config file (optional)'
+    required: false
+    default: ''
+  skills-dir:
+    description: 'Path to skills directory (optional)'
+    required: false
+    default: ''
+  version-file:
+    description: 'Path to VERSION file (optional, defaults to auto-generated)'
+    required: false
+    default: ''
+  output-dir:
+    description: 'Directory for output binaries'
+    required: false
+    default: 'dist'
+  platforms:
+    description: 'Comma-separated list of GOOS/GOARCH pairs to build'
+    required: false
+    default: 'linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64'
+  binary-name:
+    description: 'Name for the output binary'
+    required: false
+    default: 'openlore'
+
+outputs:
+  binaries:
+    description: 'Comma-separated list of built binary paths'
+    value: ${{ steps.build.outputs.binaries }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+
+    - name: Clone OpenLore
+      shell: bash
+      run: |
+        git clone --depth 1 https://github.com/aakarim/go-openlore.git /tmp/openlore-build
+
+    - name: Embed documentation
+      shell: bash
+      run: |
+        # Clear placeholder
+        rm -rf /tmp/openlore-build/assets/lore/*
+
+        # Copy docs
+        cp -r ${{ inputs.docs-dir }}/* /tmp/openlore-build/assets/lore/
+
+        # Copy config if provided
+        if [ -n "${{ inputs.config }}" ] && [ -f "${{ inputs.config }}" ]; then
+          cp "${{ inputs.config }}" /tmp/openlore-build/assets/config/openlore.yml
+        fi
+
+        # Copy auth config if provided
+        if [ -n "${{ inputs.auth }}" ] && [ -f "${{ inputs.auth }}" ]; then
+          cp "${{ inputs.auth }}" /tmp/openlore-build/assets/config/lore.json
+        fi
+
+        # Copy skills if provided
+        if [ -n "${{ inputs.skills-dir }}" ] && [ -d "${{ inputs.skills-dir }}" ]; then
+          cp -r "${{ inputs.skills-dir }}"/* /tmp/openlore-build/assets/skills/
+        fi
+
+        # Set version
+        if [ -n "${{ inputs.version-file }}" ] && [ -f "${{ inputs.version-file }}" ]; then
+          cp "${{ inputs.version-file }}" /tmp/openlore-build/assets/config/VERSION
+        else
+          echo "${{ github.sha }}" > /tmp/openlore-build/assets/config/VERSION
+        fi
+
+    - name: Build binaries
+      id: build
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.output-dir }}
+        BINARIES=""
+        IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+
+        for platform in "${PLATFORMS[@]}"; do
+          IFS='/' read -r GOOS GOARCH <<< "$platform"
+          
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then
+            EXT=".exe"
+          fi
+          
+          OUTPUT="${{ inputs.output-dir }}/${{ inputs.binary-name }}-${GOOS}-${GOARCH}${EXT}"
+          
+          echo "Building for ${GOOS}/${GOARCH}..."
+          cd /tmp/openlore-build
+          GOOS=$GOOS GOARCH=$GOARCH go build -o "${GITHUB_WORKSPACE}/${OUTPUT}" ./cmd/openlore
+          cd "${GITHUB_WORKSPACE}"
+          
+          if [ -n "$BINARIES" ]; then
+            BINARIES="${BINARIES},${OUTPUT}"
+          else
+            BINARIES="${OUTPUT}"
+          fi
+        done
+        
+        echo "binaries=${BINARIES}" >> $GITHUB_OUTPUT
+        echo "Built binaries: ${BINARIES}"

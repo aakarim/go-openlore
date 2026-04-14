@@ -1,0 +1,97 @@
+package cmds
+
+import (
+	"io"
+	"strconv"
+	"strings"
+)
+
+func CmdXargs(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
+	replaceStr := ""
+	delimiter := ""
+	maxArgs := 0
+	nullDelim := false
+	var cmdParts []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-I":
+			if i+1 < len(args) {
+				replaceStr = args[i+1]
+				i++
+			}
+		case "-d":
+			if i+1 < len(args) {
+				delimiter = args[i+1]
+				i++
+			}
+		case "-n":
+			if i+1 < len(args) {
+				maxArgs, _ = strconv.Atoi(args[i+1])
+				i++
+			}
+		case "-0":
+			nullDelim = true
+		default:
+			cmdParts = append(cmdParts, args[i])
+		}
+	}
+
+	if len(cmdParts) == 0 {
+		cmdParts = []string{"echo"}
+	}
+
+	if stdin == nil {
+		return 0
+	}
+
+	data, _ := io.ReadAll(stdin)
+	input := string(data)
+
+	var items []string
+	if nullDelim {
+		items = strings.Split(input, "\x00")
+	} else if delimiter != "" {
+		items = strings.Split(input, delimiter)
+	} else {
+		items = strings.Fields(input)
+	}
+
+	// Remove empty items
+	var filtered []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			filtered = append(filtered, item)
+		}
+	}
+	items = filtered
+
+	lastExit := 0
+
+	if replaceStr != "" {
+		for _, item := range items {
+			var cmdLine []string
+			for _, p := range cmdParts {
+				cmdLine = append(cmdLine, strings.ReplaceAll(p, replaceStr, item))
+			}
+			lastExit = ctx.Exec(strings.Join(cmdLine, " "), w, errW, nil)
+		}
+		return lastExit
+	}
+
+	if maxArgs > 0 {
+		for i := 0; i < len(items); i += maxArgs {
+			end := i + maxArgs
+			if end > len(items) {
+				end = len(items)
+			}
+			cmdLine := strings.Join(cmdParts, " ") + " " + strings.Join(items[i:end], " ")
+			lastExit = ctx.Exec(cmdLine, w, errW, nil)
+		}
+		return lastExit
+	}
+
+	cmdLine := strings.Join(cmdParts, " ") + " " + strings.Join(items, " ")
+	return ctx.Exec(cmdLine, w, errW, nil)
+}

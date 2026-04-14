@@ -1,0 +1,36 @@
+# Multi-port Caddy configuration for OpenLore
+#
+# Serves SSH on both port 22 (standard) and port 443 (for networks
+# that block non-standard ports). Also serves the HTTP front page.
+#
+# Requires the caddy-ssh plugin: https://caddyserver.com/docs/modules/ssh
+#
+# Usage:
+#   caddy run --config Caddyfile
+
+# HTTP front page
+:80 {
+    reverse_proxy localhost:8080
+}
+
+# SSH on standard port 22
+:22 {
+    # Using Caddy SSH module to forward to OpenLore SSH
+    # See: https://caddyserver.com/docs/modules/ssh
+    ssh {
+        actor proxy {
+            backends localhost:2222
+        }
+    }
+}
+
+# SSH over port 443 (for restrictive firewalls)
+# Agents behind corporate firewalls can connect via:
+#   ssh -p 443 docs.example.com
+:443 {
+    ssh {
+        actor proxy {
+            backends localhost:2222
+        }
+    }
+}
