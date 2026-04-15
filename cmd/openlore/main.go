@@ -188,15 +188,16 @@ func main() {
 	flag.IntVar(port, "p", 0, "SSH server port (shorthand)")
 	metricsPort := flag.Int("metrics-port", 0, "Prometheus metrics port (0 to disable, default 3000)")
 	hostKey := flag.String("host-key", "", "path to host key file (default .ssh/openlore_ed25519)")
-	allowKeyless := flag.Bool("allow-keyless", true, "allow connections without SSH keys")
 	motd := flag.String("motd", "", "inline MOTD string shown on connect")
 	motdFile := flag.String("motd-file", "", "path to MOTD file shown on connect")
 	authFile := flag.String("auth", "", "path to auth.json for identity-based access control")
 	configFile := flag.String("config", "./openlore.yml", "path to config file")
 	flag.StringVar(configFile, "c", "./openlore.yml", "path to config file (shorthand)")
-	httpPort := flag.Int("http-port", 0, "HTTP front page port (0 to disable)")
+	httpPort := flag.Int("http-port", 0, "HTTP front page port (default 8080, 0 to disable)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file for HTTP server")
 	tlsKey := flag.String("tls-key", "", "TLS key file for HTTP server")
+	caKeysFile := flag.String("ca-keys", "", "path to trusted CA public keys file for SSH certificate auth")
+	hostCertFile := flag.String("host-cert", "", "path to SSH host certificate (signed by CA)")
 	skillsDir := flag.String("skills-dir", "", "directory containing runtime skills")
 	allowed := flag.String("allowed", "", "comma-separated file patterns to serve (e.g. '*.md,*.txt')")
 	ignore := flag.String("ignore", "", "comma-separated patterns to ignore (e.g. '.git,node_modules')")
@@ -256,9 +257,6 @@ func main() {
 	if *hostKey != "" {
 		opts = append(opts, openlore.WithHostKeyPath(*hostKey))
 	}
-	if isFlagSet("allow-keyless") {
-		opts = append(opts, openlore.WithAllowKeyless(*allowKeyless))
-	}
 	if *motd != "" {
 		opts = append(opts, openlore.WithMOTD(*motd))
 	}
@@ -274,11 +272,17 @@ func main() {
 	if *ignore != "" {
 		opts = append(opts, openlore.WithIgnorePatterns(splitAndTrim(*ignore)))
 	}
-	if *httpPort != 0 {
+	if isFlagSet("http-port") {
 		opts = append(opts, openlore.WithHTTPPort(*httpPort))
 	}
 	if *tlsCert != "" && *tlsKey != "" {
 		opts = append(opts, openlore.WithTLS(*tlsCert, *tlsKey))
+	}
+	if *caKeysFile != "" {
+		opts = append(opts, openlore.WithCAKeysFile(*caKeysFile))
+	}
+	if *hostCertFile != "" {
+		opts = append(opts, openlore.WithHostCertFile(*hostCertFile))
 	}
 	if *skillsDir != "" {
 		opts = append(opts, openlore.WithSkillsDir(*skillsDir))
@@ -296,7 +300,7 @@ func main() {
 	// Mount embedded docs if present and no directory was given on the CLI
 	if rootDir == "" {
 		if loreFS := assets.Lore(); loreFS != nil {
-			srv.MountFS("docs", loreFS)
+			srv.SetRootFS(loreFS)
 		}
 	}
 

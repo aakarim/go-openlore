@@ -43,7 +43,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/openlore --skills-dir $INSTALL_DIR/skills -p 2222 --http-port 8080 --metrics-port 0 --host-key $INSTALL_DIR/.ssh/openlore_ed25519
+ExecStart=$INSTALL_DIR/openlore -p 2222 --metrics-port 0 --host-key $INSTALL_DIR/.ssh/openlore_ed25519
 Restart=always
 RestartSec=5
 

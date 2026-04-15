@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -69,12 +70,23 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 			return nil, fmt.Errorf("loading auth config: %w", err)
 		}
 		s.auth = auth
+
+		// Auth policy fields override config defaults
+		if auth.AllowKeyless != nil {
+			s.config.AllowKeyless = *auth.AllowKeyless
+		}
+		if auth.UnknownIdentity != "" {
+			s.config.UnknownIdentity = auth.UnknownIdentity
+		}
+		if auth.DefaultCwd != "" {
+			s.config.DefaultCwd = auth.DefaultCwd
+		}
 	}
 
 	// Set up root directory
 	if rootDir != "" {
 		rootFS := NewDirFS(rootDir, cfg.Files)
-		s.merge.Mount("docs", rootFS)
+		s.merge.SetRoot(rootFS)
 	}
 
 	// Set up additional folders
@@ -125,6 +137,18 @@ func (s *Server) MountFS(name string, fsys fs.FS) {
 	s.merge.Mount(name, NewFSAdapter(fsys))
 }
 
+// SetRootFS sets the root filesystem using a standard fs.FS.
+func (s *Server) SetRootFS(fsys fs.FS) {
+	s.merge.SetRoot(NewFSAdapter(fsys))
+}
+
+func (s *Server) advertisedSSHPort() int {
+	if s.config.ExternalSSHPort != 0 {
+		return s.config.ExternalSSHPort
+	}
+	return s.config.Port
+}
+
 // OnConnect registers a callback for new connections.
 func (s *Server) OnConnect(fn OnConnectFunc) {
 	s.onConnect = fn
@@ -157,8 +181,22 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 
 	// Resolve path access from auth config
 	if s.auth != nil && id.PublicKey != nil {
-		keyStr := string(gossh.MarshalAuthorizedKey(id.PublicKey))
+		// Extract the underlying public key for matching.
+		// If the client presented a certificate, sess.PublicKey() returns
+		// the certificate itself — we need the inner key to match against
+		// raw public keys stored in lore.json identities.
+		matchKey := id.PublicKey
+		var cert *gossh.Certificate
+		if c, ok := id.PublicKey.(*gossh.Certificate); ok {
+			cert = c
+			matchKey = c.Key
+		}
+
+		keyStr := string(gossh.MarshalAuthorizedKey(matchKey))
 		matched := false
+
+		// First: try matching by public key (works for both raw keys and
+		// the underlying key inside a certificate).
 		for _, ident := range s.auth.Identities {
 			if ident.PublicKey == keyStr {
 				if spec, ok := s.auth.Lore[ident.Lore]; ok {
@@ -171,7 +209,25 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				break
 			}
 		}
-		// Unrecognized key: fall back to "default" lore spec
+
+		// Second: if the client used a certificate and no key matched,
+		// map certificate principals to lore spec names. This lets you
+		// sign certs with `-n frontend` and have them automatically get
+		// the "frontend" lore spec without registering individual keys.
+		if !matched && cert != nil {
+			for _, principal := range cert.ValidPrincipals {
+				if spec, ok := s.auth.Lore[principal]; ok {
+					id.LoreName = principal
+					for _, pm := range spec.Paths {
+						id.PathAccess = append(id.PathAccess, pm)
+					}
+					matched = true
+					break
+				}
+			}
+		}
+
+		// Unrecognized key/cert: fall back to "default" lore spec
 		if !matched {
 			if spec, ok := s.auth.Lore["default"]; ok {
 				id.LoreName = "default"
@@ -303,22 +359,74 @@ func (s *Server) ListenAndServe() error {
 	if !s.config.AllowKeyless {
 		opts = append(opts, ssh.PublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
 			if s.config.UnknownIdentity == "deny" && s.auth != nil {
-				keyStr := string(gossh.MarshalAuthorizedKey(key))
+				// Extract underlying key from certificates
+				matchKey := key
+				var cert *gossh.Certificate
+				if c, ok := key.(*gossh.Certificate); ok {
+					cert = c
+					matchKey = c.Key
+				}
+
+				keyStr := string(gossh.MarshalAuthorizedKey(matchKey))
 				for _, ident := range s.auth.Identities {
 					if ident.PublicKey == keyStr {
 						return true
 					}
 				}
+
+				// Allow cert-authenticated users whose principal matches a lore spec
+				if cert != nil {
+					for _, principal := range cert.ValidPrincipals {
+						if _, ok := s.auth.Lore[principal]; ok {
+							return true
+						}
+					}
+				}
+
 				return false
 			}
 			return true
 		}))
 	}
 
+	if s.config.CAKeysFile != "" {
+		opts = append(opts, wish.WithTrustedUserCAKeys(s.config.CAKeysFile))
+	}
+
 	srv, err := wish.NewServer(opts...)
 	if err != nil {
 		return fmt.Errorf("creating SSH server: %w", err)
 	}
+
+	if s.config.HostCertFile != "" {
+		certBytes, err := os.ReadFile(s.config.HostCertFile)
+		if err != nil {
+			return fmt.Errorf("reading host certificate: %w", err)
+		}
+		parsed, _, _, _, err := gossh.ParseAuthorizedKey(certBytes)
+		if err != nil {
+			return fmt.Errorf("parsing host certificate: %w", err)
+		}
+		cert, ok := parsed.(*gossh.Certificate)
+		if !ok {
+			return fmt.Errorf("host certificate file does not contain a certificate")
+		}
+
+		hostKeyBytes, err := os.ReadFile(s.config.HostKeyPath)
+		if err != nil {
+			return fmt.Errorf("reading host key for certificate: %w", err)
+		}
+		hostSigner, err := gossh.ParsePrivateKey(hostKeyBytes)
+		if err != nil {
+			return fmt.Errorf("parsing host key for certificate: %w", err)
+		}
+		certSigner, err := gossh.NewCertSigner(cert, hostSigner)
+		if err != nil {
+			return fmt.Errorf("creating host certificate signer: %w", err)
+		}
+		srv.AddHostKey(certSigner)
+	}
+
 	s.srv = srv
 
 	if s.config.MetricsPort > 0 {
@@ -329,10 +437,12 @@ func (s *Server) ListenAndServe() error {
 		webFS := assets.Web()
 		if webFS != nil {
 			httpSrv := httpserver.New(webFS, httpserver.Config{
-				Port:    s.config.HTTPPort,
-				TLSCert: s.config.TLSCert,
-				TLSKey:  s.config.TLSKey,
-				Logger:  s.logger,
+				Port:        s.config.HTTPPort,
+				TLSCert:     s.config.TLSCert,
+				TLSKey:      s.config.TLSKey,
+				HostKeyPath: s.config.HostKeyPath,
+				SSHPort:     s.advertisedSSHPort(),
+				Logger:      s.logger,
 			})
 			httpSrv.Start()
 			s.httpSrv = httpSrv

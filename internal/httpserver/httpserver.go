@@ -7,14 +7,19 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // Config holds HTTP server configuration.
 type Config struct {
-	Port    int
-	TLSCert string
-	TLSKey  string
-	Logger  *slog.Logger
+	Port        int
+	TLSCert     string
+	TLSKey      string
+	HostKeyPath string
+	SSHPort     int
+	Logger      *slog.Logger
 }
 
 // Server is the HTTP front page server.
@@ -26,6 +31,11 @@ type Server struct {
 // New creates a new HTTP server serving the given filesystem.
 func New(fsys fs.FS, cfg Config) *Server {
 	mux := http.NewServeMux()
+
+	if cfg.HostKeyPath != "" {
+		mux.HandleFunc("/host-key", hostKeyHandler(cfg.HostKeyPath, cfg.SSHPort))
+	}
+
 	mux.Handle("/", http.FileServer(http.FS(fsys)))
 
 	srv := &http.Server{
@@ -40,6 +50,29 @@ func New(fsys fs.FS, cfg Config) *Server {
 	}
 
 	return &Server{srv: srv, config: cfg}
+}
+
+// hostKeyHandler returns an HTTP handler that serves the SSH host public key.
+// The SSH port is included in the X-SSH-Port header so clients can construct
+// correct known_hosts entries.
+func hostKeyHandler(hostKeyPath string, sshPort int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		keyBytes, err := os.ReadFile(hostKeyPath)
+		if err != nil {
+			http.Error(w, "host key not available", http.StatusInternalServerError)
+			return
+		}
+		signer, err := gossh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			http.Error(w, "host key not available", http.StatusInternalServerError)
+			return
+		}
+		pubKey := gossh.MarshalAuthorizedKey(signer.PublicKey())
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("X-SSH-Port", fmt.Sprintf("%d", sshPort))
+		w.Write(pubKey)
+	}
 }
 
 // Start starts the HTTP server in a goroutine.

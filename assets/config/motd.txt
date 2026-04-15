@@ -1,2 +1,10 @@
-📜 Welcome to OpenLore — your docs, over SSH.
-Type 'help' for available commands, 'skills' for agent skills, Ctrl-D to exit.
+📜 Welcome to openlore.sh
+
+Serve your docs to AI agents over SSH.
+
+Quick start:
+  ssh openlore.sh teach | your-agent-cli
+  ssh openlore.sh agents >> AGENTS.md
+
+Type 'tree -L 2 /' to explore, 'skills' to see available commands.
+https://github.com/aakarim/go-openlore

@@ -128,6 +128,27 @@
             font-size: 0.8rem;
             margin: 0.25rem;
         }
+        .host-key-box {
+            position: relative;
+        }
+        .host-key-box pre {
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: var(--border);
+            color: var(--text);
+            border: none;
+            border-radius: 4px;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .copy-btn:hover { background: var(--accent); }
     </style>
 </head>
 <body>
@@ -226,11 +247,69 @@ ssh -p 2222 localhost "grep -r 'authentication' /docs"</pre>
             </p>
         </section>
 
+        <section id="host-key-section" style="display: none;">
+            <h2>🔑 SSH Host Key</h2>
+            <p>
+                Verify this server's identity by adding its public key to your
+                <code>~/.ssh/known_hosts</code> before connecting.
+                This prevents man-in-the-middle attacks by ensuring you're
+                talking to the real server.
+            </p>
+            <h3>Public Key</h3>
+            <div class="host-key-box">
+                <button class="copy-btn" onclick="copyHostKey()">Copy</button>
+                <pre id="host-key-value">Loading…</pre>
+            </div>
+            <h3>Add to known_hosts</h3>
+            <p>Run this to trust the host key for future connections:</p>
+            <div class="host-key-box">
+                <button class="copy-btn" onclick="copyKnownHosts()">Copy</button>
+                <pre id="known-hosts-entry">Loading…</pre>
+            </div>
+        </section>
+
         <footer>
             <p>
                 <a href="https://github.com/aakarim/go-openlore">GitHub</a> · MIT License
             </p>
         </footer>
     </div>
+
+    <script>
+    (function() {
+        fetch('/host-key')
+            .then(function(r) {
+                if (!r.ok) throw new Error();
+                var sshPort = r.headers.get('X-SSH-Port') || '22';
+                return r.text().then(function(text) { return { key: text.trim(), sshPort: sshPort }; });
+            })
+            .then(function(data) {
+                var key = data.key;
+                var sshPort = data.sshPort;
+                document.getElementById('host-key-section').style.display = '';
+                document.getElementById('host-key-value').textContent = key;
+                var host = location.hostname;
+                var entry;
+                if (sshPort !== '22') {
+                    entry = '# Add to ~/.ssh/known_hosts\n[' + host + ']:' + sshPort + ' ' + key;
+                } else {
+                    entry = '# Add to ~/.ssh/known_hosts\n' + host + ' ' + key;
+                }
+                document.getElementById('known-hosts-entry').textContent = entry;
+            })
+            .catch(function() {});
+    })();
+
+    function copyHostKey() {
+        var text = document.getElementById('host-key-value').textContent;
+        navigator.clipboard.writeText(text);
+    }
+    function copyKnownHosts() {
+        var el = document.getElementById('known-hosts-entry');
+        var lines = el.textContent.split('\n');
+        var text = lines.filter(function(l) { return l.charAt(0) !== '#'; }).join('\n');
+        navigator.clipboard.writeText(text);
+    }
+    </script>
 </body>
 </html>

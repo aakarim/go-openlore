@@ -23,8 +23,11 @@ type Config struct {
 	AuthFile        string
 	SkillsDir       string
 	HTTPPort        int
+	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
 	TLSCert         string
 	TLSKey          string
+	CAKeysFile      string
+	HostCertFile    string
 	Files        FilesConfig
 	Folders      []FolderConfig
 	Logger       *slog.Logger
@@ -47,10 +50,13 @@ type FolderConfig struct {
 	Path string
 }
 
-// AuthConfig is loaded from auth.json.
+// AuthConfig is loaded from lore.json.
 type AuthConfig struct {
-	Lore       map[string]LoreSpec `json:"lore"`
-	Identities []AuthIdentity      `json:"identities"`
+	AllowKeyless    *bool               `json:"allow_keyless,omitempty"`
+	UnknownIdentity string              `json:"unknown_identity,omitempty"`
+	DefaultCwd      string              `json:"default_cwd,omitempty"`
+	Lore            map[string]LoreSpec `json:"lore"`
+	Identities      []AuthIdentity      `json:"identities"`
 }
 
 // LoreSpec defines a named set of path mappings.
@@ -107,16 +113,17 @@ type fileConfig struct {
 	Port         int            `yaml:"port"`
 	MetricsPort  int            `yaml:"metrics_port"`
 	HostKeyPath  string         `yaml:"host_key_path"`
-	AllowKeyless    *bool  `yaml:"allow_keyless"`
-	UnknownIdentity string `yaml:"unknown_identity"`
-	DefaultCwd      string `yaml:"default_cwd"`
 	MOTD         string         `yaml:"motd"`
 	MOTDFile     string         `yaml:"motd_file"`
 	AuthFile     string         `yaml:"auth_file"`
 	SkillsDir    string         `yaml:"skills_dir"`
-	HTTPPort     int            `yaml:"http_port"`
-	TLSCert      string         `yaml:"tls_cert"`
+	HTTPPort        int            `yaml:"http_port"`
+	ExternalSSHPort int            `yaml:"external_ssh_port"`
+	TLSCert         string         `yaml:"tls_cert"`
 	TLSKey       string         `yaml:"tls_key"`
+	CAKeysFile   string         `yaml:"ca_keys_file"`
+	HostCertFile string         `yaml:"host_cert_file"`
+	DefaultCwd   string         `yaml:"default_cwd"`
 	Files        *filesYAML     `yaml:"files"`
 	Folders      []FolderConfig `yaml:"folders"`
 }
@@ -132,6 +139,7 @@ type filesYAML struct {
 func New(opts ...Option) (Config, error) {
 	cfg := Config{
 		Port:         2222,
+		HTTPPort:     8080,
 		MetricsPort:  3000,
 		HostKeyPath:  ".ssh/openlore_ed25519",
 		AllowKeyless:    true,
@@ -195,15 +203,6 @@ func WithConfigFile(path string) Option {
 		if fc.HostKeyPath != "" {
 			cfg.HostKeyPath = fc.HostKeyPath
 		}
-		if fc.AllowKeyless != nil {
-			cfg.AllowKeyless = *fc.AllowKeyless
-		}
-		if fc.UnknownIdentity != "" {
-			cfg.UnknownIdentity = fc.UnknownIdentity
-		}
-		if fc.DefaultCwd != "" {
-			cfg.DefaultCwd = fc.DefaultCwd
-		}
 		if fc.MOTDFile != "" {
 			motdData, err := os.ReadFile(fc.MOTDFile)
 			if err != nil {
@@ -222,11 +221,23 @@ func WithConfigFile(path string) Option {
 		if fc.HTTPPort != 0 {
 			cfg.HTTPPort = fc.HTTPPort
 		}
+		if fc.ExternalSSHPort != 0 {
+			cfg.ExternalSSHPort = fc.ExternalSSHPort
+		}
 		if fc.TLSCert != "" {
 			cfg.TLSCert = fc.TLSCert
 		}
 		if fc.TLSKey != "" {
 			cfg.TLSKey = fc.TLSKey
+		}
+		if fc.CAKeysFile != "" {
+			cfg.CAKeysFile = fc.CAKeysFile
+		}
+		if fc.HostCertFile != "" {
+			cfg.HostCertFile = fc.HostCertFile
+		}
+		if fc.DefaultCwd != "" {
+			cfg.DefaultCwd = fc.DefaultCwd
 		}
 		if fc.Files != nil {
 			if len(fc.Files.Allowed) > 0 {
@@ -271,15 +282,6 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if fc.HostKeyPath != "" {
 				cfg.HostKeyPath = fc.HostKeyPath
 			}
-			if fc.AllowKeyless != nil {
-				cfg.AllowKeyless = *fc.AllowKeyless
-			}
-			if fc.UnknownIdentity != "" {
-				cfg.UnknownIdentity = fc.UnknownIdentity
-			}
-			if fc.DefaultCwd != "" {
-				cfg.DefaultCwd = fc.DefaultCwd
-			}
 			if fc.MOTDFile != "" {
 				motdData, err := os.ReadFile(fc.MOTDFile)
 				if err != nil {
@@ -298,11 +300,23 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if fc.HTTPPort != 0 {
 				cfg.HTTPPort = fc.HTTPPort
 			}
+			if fc.ExternalSSHPort != 0 {
+				cfg.ExternalSSHPort = fc.ExternalSSHPort
+			}
 			if fc.TLSCert != "" {
 				cfg.TLSCert = fc.TLSCert
 			}
 			if fc.TLSKey != "" {
 				cfg.TLSKey = fc.TLSKey
+			}
+			if fc.CAKeysFile != "" {
+				cfg.CAKeysFile = fc.CAKeysFile
+			}
+			if fc.HostCertFile != "" {
+				cfg.HostCertFile = fc.HostCertFile
+			}
+			if fc.DefaultCwd != "" {
+				cfg.DefaultCwd = fc.DefaultCwd
 			}
 			if fc.Files != nil {
 				if len(fc.Files.Allowed) > 0 {
@@ -433,6 +447,24 @@ func WithLogger(logger *slog.Logger) Option {
 func WithHTTPPort(port int) Option {
 	return func(cfg *Config) error {
 		cfg.HTTPPort = port
+		return nil
+	}
+}
+
+// WithCAKeysFile sets the path to a file containing trusted CA public keys
+// for SSH certificate authentication (analogous to OpenSSH TrustedUserCAKeys).
+func WithCAKeysFile(path string) Option {
+	return func(cfg *Config) error {
+		cfg.CAKeysFile = path
+		return nil
+	}
+}
+
+// WithHostCertFile sets the path to the SSH host certificate file
+// (signed by a CA, analogous to OpenSSH HostCertificate).
+func WithHostCertFile(path string) Option {
+	return func(cfg *Config) error {
+		cfg.HostCertFile = path
 		return nil
 	}
 }

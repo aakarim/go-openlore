@@ -224,10 +224,9 @@ Commands:
 
 Flags:
   -p, --port           SSH server port (default 2222)
-  --http-port          HTTP front page port (0 to disable)
+  --http-port          HTTP front page port (default 8080, 0 to disable)
   --metrics-port       Prometheus metrics port, 0 to disable (default 3000)
   --host-key           Path to host key file (default .ssh/openlore_ed25519)
-  --allow-keyless      Allow connections without SSH keys (default true)
   --motd               Inline MOTD string
   --motd-file          Path to MOTD file
   --auth               Path to lore.json
@@ -236,6 +235,9 @@ Flags:
   --ignore             Comma-separated ignore patterns (e.g. '.git,node_modules')
   --tls-cert           TLS certificate file for HTTP server
   --tls-key            TLS key file for HTTP server
+  --ca-keys            Trusted CA public keys for SSH certificate auth
+  --host-cert          SSH host certificate signed by a CA
+  --skills-dir         Directory containing runtime skills
 ```
 
 ## Agent Setup
@@ -321,7 +323,7 @@ files:
 
 ### Keyless (Default)
 
-By default, any SSH client can connect. No keys required.
+By default, any SSH client can connect. No keys required. To require public key auth, set `"allow_keyless": false` in your `lore.json`.
 
 ### Public Key Auth
 
@@ -329,6 +331,9 @@ Create a `lore.json` to control access per public key:
 
 ```json
 {
+  "allow_keyless": true,
+  "unknown_identity": "allow",
+  "default_cwd": "/docs",
   "lore": {
     "default": { "paths": ["/docs/public"] },
     "backend": {
@@ -358,17 +363,42 @@ openlore identity add \
 
 ### Unknown Identity Handling
 
-In `openlore.yml`:
-- `unknown_identity: allow` (default) — unrecognized keys get the "default" lore spec
-- `unknown_identity: deny` — reject unrecognized keys
+In `lore.json`:
+- `"unknown_identity": "allow"` (default) — unrecognized keys get the "default" lore spec
+- `"unknown_identity": "deny"` — reject unrecognized keys
 
 ## HTTP Front Page
 
-Enable a human-facing web page with `--http-port`:
+A human-facing web page is served on port 8080 by default. Disable it with `--http-port 0`:
 
 ```bash
-openlore --http-port 8080 ./docs
+openlore ./docs                   # HTTP on :8080 (default)
+openlore --http-port 3000 ./docs  # HTTP on :3000
+openlore --http-port 0 ./docs     # HTTP disabled
 ```
+
+The front page includes an **SSH Host Key** section that displays the server's public key and a ready-to-paste `known_hosts` entry. If you serve the HTTP page over TLS (`--tls-cert` / `--tls-key`), this gives clients a trusted way to verify the server's SSH identity before their first connection.
+
+### Verifying the Host Key
+
+SSH doesn't have public certificate authorities like TLS does — there is no Let's Encrypt for SSH. When a client connects for the first time, it has to trust the server's key on first use (TOFU), which is vulnerable to man-in-the-middle attacks.
+
+OpenLore addresses this by exposing the host public key at `GET /host-key` on the HTTP server. **We recommend you serve the HTTP page over TLS** so that clients can:
+
+1. Visit `https://your-server:8080` and verify the host key
+2. Copy the `known_hosts` entry from the page (or `curl https://your-server:8080/host-key`)
+3. Connect via SSH with confidence that they're talking to the real server
+
+```bash
+# Fetch the host key over HTTPS and add to known_hosts
+curl -s https://docs.example.com/host-key | \
+  awk '{print "[docs.example.com]:2222 " $0}' >> ~/.ssh/known_hosts
+
+# Now connect — no TOFU prompt
+ssh -p 2222 docs.example.com
+```
+
+If you use SSH certificate auth (`--ca-keys`, `--host-cert`), the host certificate provides even stronger guarantees. But for most deployments, publishing the host key over TLS is the simplest path to verified server identity.
 
 See `examples/` for Caddy reverse proxy configurations.
 
@@ -423,6 +453,8 @@ OpenLore is designed to be safe to expose on a network:
 - **File type filtering** — only serve files matching allowed patterns
 - **Directory ignoring** — skip `.git`, `node_modules`, `.env`, and other sensitive paths
 - **Path traversal protection** — all paths are cleaned and resolved within the VFS root
+- **Host key verification** — the HTTP front page displays the SSH host key and serves it at `/host-key`. When the HTTP server is TLS-secured, this gives clients an independently verifiable trust anchor for the SSH connection. SSH has no public CA infrastructure, so we recommend verifying the host key over HTTPS before connecting.
+- **SSH certificate auth** — supports CA-signed user certificates (`--ca-keys`) and host certificates (`--host-cert`) for environments that run their own SSH CA
 
 See [SECURITY.md](SECURITY.md) for a full security evaluation.
 

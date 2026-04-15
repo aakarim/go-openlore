@@ -1,4 +1,7 @@
 {
+  "allow_keyless": true,
+  "unknown_identity": "allow",
+  "default_cwd": "/docs",
   "lore": {
     "default": {
       "paths": [

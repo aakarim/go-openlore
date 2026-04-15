@@ -41,5 +41,7 @@ var (
 	WithSkillsDir       = config.WithSkillsDir
 	WithHTTPPort        = config.WithHTTPPort
 	WithTLS             = config.WithTLS
+	WithCAKeysFile      = config.WithCAKeysFile
+	WithHostCertFile    = config.WithHostCertFile
 	LoadAuthConfig      = config.LoadAuthConfig
 )

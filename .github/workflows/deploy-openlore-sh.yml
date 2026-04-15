@@ -9,6 +9,12 @@ on:
       - 'pkg/**'
       - 'internal/**'
       - 'cmd/**'
+  workflow_dispatch:
+
+# Required secrets:
+#   DEPLOY_SSH_KEY       - Private SSH key for root access to the droplet
+#   DEPLOY_HOST          - Droplet IP address
+#   DEPLOY_KNOWN_HOSTS   - Known hosts entry for the droplet (ssh-keyscan output)
 
 jobs:
   deploy:
@@ -16,11 +22,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+      - uses: actions/setup-go@v5
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          go-version: '1.25'
 
-      - name: Deploy to App Platform
+      - name: Embed docs and config
         run: |
-          doctl apps create-deployment $(doctl apps list --format ID --no-header | head -1)
+          rm -rf assets/lore/*
+          cp -r openlore.sh/docs/* assets/lore/
+          cp openlore.sh/openlore.yml assets/config/openlore.yml
+          cp openlore.sh/motd.txt assets/config/motd.txt
+          cp -r openlore.sh/skills/* assets/skills/
+
+      - name: Build
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o openlore ./cmd/openlore
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Upload binary
+        run: |
+          scp -i ~/.ssh/deploy_key openlore ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/openlore
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} '
+            systemctl stop openlore
+            cp /tmp/openlore /opt/openlore/openlore
+            chmod +x /opt/openlore/openlore
+            chown -R openlore:openlore /opt/openlore
+            systemctl start openlore
+          '
+
+      - name: Verify
+        run: |
+          sleep 3
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null openlore.sh "echo ok"

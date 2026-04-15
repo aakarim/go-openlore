@@ -102,13 +102,20 @@ func (d *DirFS) ReadFile(p string) ([]byte, error) {
 }
 
 // MergeFS merges multiple filesystems under named mount points.
+// An optional root filesystem serves content directly at "/".
 type MergeFS struct {
+	root   bashfs.FileSystem
 	mounts map[string]bashfs.FileSystem
 }
 
 // NewMergeFS creates an empty MergeFS.
 func NewMergeFS() *MergeFS {
 	return &MergeFS{mounts: make(map[string]bashfs.FileSystem)}
+}
+
+// SetRoot sets the root filesystem that serves content at "/".
+func (m *MergeFS) SetRoot(fs bashfs.FileSystem) {
+	m.root = fs
 }
 
 // Mount adds a filesystem under the given name.
@@ -124,20 +131,24 @@ func (m *MergeFS) resolve(p string) (string, bashfs.FileSystem, error) {
 		return "", nil, nil // root listing
 	}
 
+	// Check named mounts first
 	parts := strings.SplitN(p, "/", 2)
 	mountName := parts[0]
 
-	fsys, ok := m.mounts[mountName]
-	if !ok {
-		return "", nil, fmt.Errorf("not found: %s", p)
+	if fsys, ok := m.mounts[mountName]; ok {
+		subPath := "/"
+		if len(parts) > 1 {
+			subPath = "/" + parts[1]
+		}
+		return subPath, fsys, nil
 	}
 
-	subPath := "/"
-	if len(parts) > 1 {
-		subPath = "/" + parts[1]
+	// Fall back to root filesystem
+	if m.root != nil {
+		return "/" + p, m.root, nil
 	}
 
-	return subPath, fsys, nil
+	return "", nil, fmt.Errorf("not found: %s", p)
 }
 
 func (m *MergeFS) Stat(p string) (*bashfs.FileInfo, error) {
@@ -164,9 +175,15 @@ func (m *MergeFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 		return nil, err
 	}
 
-	// Root: list mount points
+	// Root: merge root FS entries with mount points
 	if fsys == nil {
 		var entries []bashfs.FileInfo
+		if m.root != nil {
+			rootEntries, err := m.root.ReadDir("/")
+			if err == nil {
+				entries = append(entries, rootEntries...)
+			}
+		}
 		for name := range m.mounts {
 			entries = append(entries, bashfs.FileInfo{
 				FileName: name,

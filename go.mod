@@ -1,6 +1,6 @@
 module github.com/aakarim/go-openlore
 
-go 1.25.0
+go 1.26.2
 
 require (
 	github.com/charmbracelet/ssh v0.0.0-20250826160808-ebfa259c7309

@@ -1,0 +1,131 @@
+# OpenLore Configuration
+# Place this file as openlore.yml in your project root,
+# or specify a path with --config / -c.
+#
+# This file is for deployment config only (ports, paths, TLS).
+# Auth policy (allow_keyless, unknown_identity, default_cwd)
+# belongs in lore.json — see lore.json.example.
+
+# Config file version. Used for migration between config formats.
+version: "1"
+
+# ── Server ────────────────────────────────────────────
+
+# SSH server port. Agents connect here.
+port: 2222
+
+# HTTP front page port for human users (default 8080). Set to 0 to disable.
+# http_port: 8080
+
+# Prometheus metrics port. Set to 0 to disable.
+metrics_port: 3000
+
+# TLS certificate and key for the HTTP server (optional).
+# Only applies to the HTTP front page, not SSH.
+# tls_cert: ./cert.pem
+# tls_key: ./key.pem
+
+# Path to the SSH host key. Auto-generated on first run if missing.
+# Uses ed25519 by default.
+host_key_path: .ssh/openlore_ed25519
+
+# ── Authentication ────────────────────────────────────
+
+# Path to lore.json for identity-based access control.
+# Maps SSH public keys to named "lore" specs that control which
+# paths each identity can access. See lore.json.example for format.
+# auth_file: lore.json
+
+# ── SSH Certificates ──────────────────────────────────
+#
+# SSH certificates provide stronger auth than raw public keys.
+# Instead of managing individual keys, a Certificate Authority (CA)
+# signs short-lived certificates. Both sides can be configured:
+#
+#   1. User certificates  — clients prove identity via CA-signed certs
+#   2. Host certificates  — server proves identity via CA-signed cert
+#
+# Quick setup with ssh-keygen:
+#
+#   # Create a CA key pair (guard the private key!)
+#   ssh-keygen -t ed25519 -f my_ca -C "my-org CA"
+#
+#   # Sign a user's public key (valid 1 week, for principal "agent")
+#   ssh-keygen -s my_ca -I agent@example -n agent -V +1w user_key.pub
+#
+#   # Sign the server's host key
+#   ssh-keygen -s my_ca -I openlore.example.com -h -V +52w .ssh/openlore_ed25519.pub
+#
+#   # Client trusts all hosts signed by this CA (add to ~/.ssh/known_hosts)
+#   @cert-authority *.example.com <contents of my_ca.pub>
+#
+# For automated certificate management, consider Smallstep step-ca:
+#   https://smallstep.com/docs/step-ca/
+
+# Path to a file containing trusted CA public keys for user certificate
+# authentication. Users presenting certificates signed by any of these
+# CAs will be accepted. Analogous to OpenSSH's TrustedUserCAKeys.
+# Can be used alongside auth_file — both raw keys and certificates work.
+# ca_keys_file: ./ca_user_key.pub
+
+# Path to the server's host certificate, signed by a CA.
+# When set, the server presents this certificate to clients, allowing
+# them to verify the server's identity against the CA instead of
+# relying on trust-on-first-use (TOFU) fingerprint prompts.
+# Analogous to OpenSSH's HostCertificate directive.
+# The certificate must correspond to the key at host_key_path.
+# host_cert_file: .ssh/openlore_ed25519-cert.pub
+
+# ── Content ───────────────────────────────────────────
+
+# Only serve files matching these glob patterns.
+# If empty, all files are served (except ignored ones).
+files:
+  allowed:
+    - "*.md"
+    - "*.txt"
+    - "*.yml"
+    - "*.yaml"
+    - "*.json"
+    - "*.rst"
+    - "*.adoc"
+  # Explicitly deny specific patterns (overrides allowed).
+  # denied:
+  #   - "secret-*.md"
+  ignore:
+    - ".git"
+    - ".svn"
+    - "node_modules"
+    - "__pycache__"
+    - ".env"
+    - ".env.*"
+    - "*.key"
+    - "*.pem"
+    - "*.p12"
+    - ".DS_Store"
+
+# Mount additional directories under named paths in the virtual filesystem.
+# Each folder appears as a top-level directory in the shell.
+# folders:
+#   - name: api-docs
+#     path: /var/docs/api
+#   - name: runbooks
+#     path: /var/docs/runbooks
+
+# ── Skills ────────────────────────────────────────────
+
+# Directory containing runtime skills (skills.json + markdown files).
+# Embedded skills in assets/skills/ are always loaded.
+# skills_dir: ./skills
+
+# ── Display ───────────────────────────────────────────
+
+# Message of the day shown when a client connects.
+# Supports multiple lines with YAML block scalar.
+motd: |
+  Welcome to the docs server.
+  Type 'tree -L 1 /' to see available documentation.
+  Type 'skills' to see available agent commands.
+
+# Alternatively, load MOTD from a file:
+# motd_file: ./motd.txt
