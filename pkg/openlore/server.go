@@ -39,7 +39,13 @@ type Server struct {
 
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
+	sessionFSFn  SessionFSFn
 }
+
+// SessionFSFn returns the filesystem to use for a given SSH session identity.
+// When set via SetSessionFSFn, the server calls fn(identity, baseFS) for each
+// new SSH session and uses the returned filesystem for that session's shell.
+type SessionFSFn func(id Identity, base bashfs.FileSystem) bashfs.FileSystem
 
 // NewServer creates a new OpenLore SSH server.
 // rootDir is the primary directory to serve (can be empty if using Mount).
@@ -140,6 +146,19 @@ func (s *Server) MountFS(name string, fsys fs.FS) {
 // SetRootFS sets the root filesystem using a standard fs.FS.
 func (s *Server) SetRootFS(fsys fs.FS) {
 	s.merge.SetRoot(NewFSAdapter(fsys))
+}
+
+// SetRootBashFS sets the root filesystem using a bashfs.FileSystem. Paths
+// that don't match any mount fall through to this filesystem.
+func (s *Server) SetRootBashFS(fsys bashfs.FileSystem) {
+	s.merge.SetRoot(fsys)
+}
+
+// SetSessionFSFn registers a per-session filesystem decorator. When set,
+// the server calls fn(identity, baseFS) for each new SSH session and uses
+// the returned filesystem for that session's shell.
+func (s *Server) SetSessionFSFn(fn SessionFSFn) {
+	s.sessionFSFn = fn
 }
 
 func (s *Server) advertisedSSHPort() int {
@@ -305,7 +324,11 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 			}
 		}()
 
-		shell := bashfs.NewShell(s.fs)
+		sessFS := s.fs
+		if s.sessionFSFn != nil {
+			sessFS = s.sessionFSFn(id, s.fs)
+		}
+		shell := bashfs.NewShell(sessFS)
 		if s.config.DefaultCwd != "" {
 			shell.SetCwd(s.config.DefaultCwd)
 		}
