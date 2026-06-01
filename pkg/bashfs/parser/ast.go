@@ -16,11 +16,29 @@ type Command interface{ isCommand() }
 
 // CallExpr is a simple command: optional assignments followed by words.
 type CallExpr struct {
-	Assigns []*Assign
-	Args    []*Word
+	Assigns  []*Assign
+	Args     []*Word
+	Heredocs []*Heredoc // <<DELIM heredocs attached to this command
+	// MergeStderr is set when the command had a `2>&1` redirection,
+	// causing the shell to send the command's stderr down its stdout.
+	MergeStderr bool
 }
 
 func (*CallExpr) isCommand() {}
+
+// Heredoc holds the body of a `<<DELIM` here-document. Body is captured
+// verbatim by the lexer at the first newline after the heredoc opener.
+//
+// Variable expansion inside the body is intentionally NOT supported in this
+// shell — heredocs are always treated as if the delimiter were quoted
+// (i.e. `<<'EOF'`). This keeps the implementation small and matches the
+// dominant use case: piping multi-line content into commands like
+// `kb publish`.
+type Heredoc struct {
+	Delimiter string // e.g. "EOF"
+	StripTabs bool   // true when opener was `<<-DELIM` (strips leading TABs)
+	Body      string // body text, filled in by the lexer
+}
 
 // BinaryOp is the operator in a BinaryCmd.
 type BinaryOp int

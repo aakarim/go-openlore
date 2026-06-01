@@ -452,24 +452,37 @@ func parseSimpleCommand(t *tokenizer) (Command, error) {
 		break
 	}
 
-	// Parse command and arguments
+	// Parse command and arguments, plus interleaved redirections (`2>&1`,
+	// `<<DELIM`).
 	for {
 		tok := t.peek()
-		if tok.kind != tokWord {
-			break
+		switch tok.kind {
+		case tokWord:
+			if isStopWord(tok.val) {
+				return finalizeCall(call), nil
+			}
+			t.next()
+			call.Args = append(call.Args, parseWordString(tok.val))
+		case tokHeredoc:
+			t.next()
+			call.Heredocs = append(call.Heredocs, tok.hd)
+		case tokRedirMerge:
+			t.next()
+			call.MergeStderr = true
+		default:
+			return finalizeCall(call), nil
 		}
-		if isStopWord(tok.val) {
-			break
-		}
-		t.next()
-		call.Args = append(call.Args, parseWordString(tok.val))
 	}
+}
 
+func finalizeCall(call *CallExpr) Command {
+	// A bare heredoc or redirection with no command is meaningless. Treat
+	// it the same as an empty statement so we don't dispatch to an empty
+	// CallExpr in the shell.
 	if len(call.Assigns) == 0 && len(call.Args) == 0 {
-		return nil, nil
+		return nil
 	}
-
-	return call, nil
+	return call
 }
 
 func isNameStart(ch byte) bool {
