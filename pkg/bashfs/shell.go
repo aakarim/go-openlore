@@ -200,6 +200,21 @@ func (s *Shell) execCall(call *parser.CallExpr, w io.Writer, errW io.Writer, std
 	cmdName := args[0]
 	cmdArgs := args[1:]
 
+	// A heredoc on the command replaces stdin with the heredoc body. We
+	// concatenate multiple heredoc bodies in declaration order to match bash.
+	if len(call.Heredocs) > 0 {
+		var buf bytes.Buffer
+		for _, hd := range call.Heredocs {
+			buf.WriteString(hd.Body)
+		}
+		stdin = &buf
+	}
+
+	// `2>&1` routes the command's stderr into the same writer as stdout.
+	if call.MergeStderr {
+		errW = w
+	}
+
 	if cmdName == "pwd" {
 		fmt.Fprintln(w, s.cwd)
 		return 0

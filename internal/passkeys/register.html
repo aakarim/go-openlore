@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register Passkey — OpenLore</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem; max-width: 420px; width: 100%; text-align: center; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: #8b949e; margin-bottom: 1.5rem; font-size: 0.9rem; }
+  .info { background: #1c2128; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; text-align: left; font-size: 0.85rem; }
+  .info dt { color: #8b949e; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .info dd { margin: 0.25rem 0 0.75rem; color: #c9d1d9; }
+  .info dd:last-child { margin-bottom: 0; }
+  button { background: #238636; color: #fff; border: none; padding: 0.75rem 2rem; border-radius: 8px; font-size: 1rem; cursor: pointer; width: 100%; transition: background 0.2s; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  #status { margin-top: 1rem; font-size: 0.9rem; min-height: 1.5rem; }
+  .success { color: #3fb950; }
+  .error { color: #f85149; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📜 Register Passkey</h1>
+  <p class="subtitle">Link this device to your OpenLore server</p>
+  <div class="info">
+    <dl>
+      <dt>Passkey Name</dt>
+      <dd><input id="passkey-name" type="text" value="" placeholder="e.g. Adil MacBook" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:0.4rem 0.6rem;width:100%;font-size:0.9rem;"></dd>
+      <dt>Access Level</dt>
+      <dd id="lore-name">—</dd>
+    </dl>
+  </div>
+  <button id="register-btn" onclick="startRegistration()">Register Passkey</button>
+  <div id="status"></div>
+</div>
+<script>
+const token = window.location.pathname.split('/').pop();
+
+async function init() {
+  const resp = await fetch(`/passkey/r/${token}/info`);
+  if (!resp.ok) {
+    document.getElementById('status').innerHTML = '<span class="error">This registration link has expired or is invalid.</span>';
+    document.getElementById('register-btn').disabled = true;
+    return;
+  }
+  const info = await resp.json();
+  document.getElementById('passkey-name').value = info.name;
+  document.getElementById('lore-name').textContent = info.lore;
+}
+
+async function startRegistration() {
+  const btn = document.getElementById('register-btn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Starting registration…';
+
+  try {
+    // Send custom name if user edited it
+    const customName = document.getElementById('passkey-name').value.trim();
+    // Begin: get creation options from server
+    const beginResp = await fetch(`/passkey/r/${token}/begin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: customName || 'default' }),
+    });
+    if (!beginResp.ok) {
+      throw new Error(await beginResp.text());
+    }
+    const options = await beginResp.json();
+
+    // Decode base64url fields for the WebAuthn API
+    options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+    options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
+    if (options.publicKey.excludeCredentials) {
+      options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => ({
+        ...c, id: base64urlToBuffer(c.id)
+      }));
+    }
+
+    status.innerHTML = '<span class="spinner"></span> Waiting for authenticator…';
+
+    // Call WebAuthn browser API
+    const credential = await navigator.credentials.create(options);
+
+    // Encode the response for the server
+    const attestation = {
+      id: credential.id,
+      rawId: bufferToBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: bufferToBase64url(credential.response.attestationObject),
+        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+      },
+    };
+    if (credential.response.getTransports) {
+      attestation.response.transports = credential.response.getTransports();
+    }
+
+    status.innerHTML = '<span class="spinner"></span> Verifying…';
+
+    // Finish: send attestation to server
+    const finishResp = await fetch(`/passkey/r/${token}/finish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(attestation),
+    });
+    if (!finishResp.ok) {
+      throw new Error(await finishResp.text());
+    }
+
+    status.innerHTML = '<span class="success">✓ Passkey registered successfully!</span>';
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      status.innerHTML = '<span class="error">Registration was cancelled.</span>';
+    } else {
+      status.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+    }
+    btn.disabled = false;
+  }
+}
+
+function base64urlToBuffer(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const binary = atob(b64 + pad);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login — OpenLore</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2.5rem; max-width: 420px; width: 100%; text-align: center; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: #8b949e; margin-bottom: 1.5rem; font-size: 0.9rem; }
+  button { background: #238636; color: #fff; border: none; padding: 0.75rem 2rem; border-radius: 8px; font-size: 1rem; cursor: pointer; width: 100%; transition: background 0.2s; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  #status { margin-top: 1rem; font-size: 0.9rem; min-height: 1.5rem; }
+  .success { color: #3fb950; }
+  .error { color: #f85149; }
+  .info { color: #8b949e; }
+  .setup-box { background: #1c2128; border: 1px solid #30363d; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; text-align: left; }
+  .setup-box h2 { font-size: 1rem; margin-bottom: 0.5rem; color: #c9d1d9; }
+  .setup-box p { font-size: 0.85rem; color: #8b949e; margin-bottom: 0.75rem; line-height: 1.5; }
+  .setup-box code { background: #0d1117; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8rem; color: #79c0ff; }
+  .setup-box pre { background: #0d1117; border-radius: 6px; padding: 0.75rem; margin-top: 0.5rem; overflow-x: auto; }
+  .setup-box pre code { padding: 0; background: none; }
+  .hidden { display: none; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📜 OpenLore</h1>
+
+  <div id="login-view" class="hidden">
+    <p class="subtitle">Authenticate with your passkey to browse documentation</p>
+    <button id="login-btn" onclick="startLogin()">Login with Passkey</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="no-passkeys-view" class="hidden">
+    <div class="setup-box">
+      <h2>No passkeys registered</h2>
+      <p>Ask your agent to register a passkey for you:</p>
+      <pre><code>Register a passkey so I can browse the docs in my browser.</code></pre>
+      <p>Your agent will run <code>passkey register</code> and give you a link to complete setup on this device.</p>
+    </div>
+    <p class="info">Once registered, refresh this page to log in.</p>
+  </div>
+
+  <div id="loading-view">
+    <p class="subtitle"><span class="spinner"></span> Loading…</p>
+  </div>
+</div>
+<script>
+const params = new URLSearchParams(window.location.search);
+const redirect = params.get('redirect') || '/lore/';
+
+async function init() {
+  try {
+    const resp = await fetch('/passkey/login/status');
+    const data = await resp.json();
+    document.getElementById('loading-view').classList.add('hidden');
+    if (data.has_passkeys) {
+      document.getElementById('login-view').classList.remove('hidden');
+    } else {
+      document.getElementById('no-passkeys-view').classList.remove('hidden');
+    }
+  } catch {
+    document.getElementById('loading-view').classList.add('hidden');
+    document.getElementById('login-view').classList.remove('hidden');
+  }
+}
+
+async function startLogin() {
+  const btn = document.getElementById('login-btn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Starting authentication…';
+
+  try {
+    // Begin: get assertion options
+    const beginResp = await fetch('/passkey/login/begin', { method: 'POST' });
+    if (!beginResp.ok) throw new Error(await beginResp.text());
+    const options = await beginResp.json();
+
+    // Decode base64url challenge
+    options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+    if (options.publicKey.allowCredentials) {
+      options.publicKey.allowCredentials = options.publicKey.allowCredentials.map(c => ({
+        ...c, id: base64urlToBuffer(c.id)
+      }));
+    }
+
+    status.innerHTML = '<span class="spinner"></span> Waiting for authenticator…';
+
+    // Call WebAuthn browser API
+    const assertion = await navigator.credentials.get(options);
+
+    // Encode response for server
+    const assertionData = {
+      id: assertion.id,
+      rawId: bufferToBase64url(assertion.rawId),
+      type: assertion.type,
+      response: {
+        authenticatorData: bufferToBase64url(assertion.response.authenticatorData),
+        clientDataJSON: bufferToBase64url(assertion.response.clientDataJSON),
+        signature: bufferToBase64url(assertion.response.signature),
+        userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : '',
+      },
+    };
+
+    status.innerHTML = '<span class="spinner"></span> Verifying…';
+
+    const finishResp = await fetch('/passkey/login/finish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(assertionData),
+    });
+    if (!finishResp.ok) throw new Error(await finishResp.text());
+
+    status.innerHTML = '<span class="success">✓ Authenticated!</span>';
+    setTimeout(() => { window.location.href = redirect; }, 500);
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      status.innerHTML = '<span class="error">Authentication was cancelled.</span>';
+    } else {
+      status.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+    }
+    btn.disabled = false;
+  }
+}
+
+function base64urlToBuffer(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const binary = atob(b64 + pad);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+init();
+</script>
+</body>
+</html>

@@ -199,8 +199,8 @@ func (s *Server) SetRootFS(fsys fs.FS) {
 	s.merge.SetRoot(NewFSAdapter(fsys))
 }
 
-// SetRootBashFS sets the root filesystem using a bashfs.FileSystem.
-// Paths that don't match any mount fall through to this filesystem.
+// SetRootBashFS sets the root filesystem using a bashfs.FileSystem. Paths
+// that don't match any mount fall through to this filesystem.
 func (s *Server) SetRootBashFS(fsys bashfs.FileSystem) {
 	s.merge.SetRoot(fsys)
 }
@@ -387,7 +387,7 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 			}
 		}()
 
-		// Build per-session filesystem filtered by lore
+		// Build per-session filesystem filtered by lore (the identity's docsets)
 		sessionFS := bashfs.FileSystem(s.merge)
 		if id.LoreName != "" && s.auth != nil {
 			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {

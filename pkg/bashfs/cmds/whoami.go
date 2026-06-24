@@ -25,3 +25,8 @@ func CmdWhoami(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin
 	fmt.Fprintf(w, "%s (lore: %s)\n", identity, lore)
 	return 0
 }
+
+func CmdHostname(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
+	fmt.Fprintln(w, "lore-shell")
+	return 0
+}

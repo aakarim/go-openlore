@@ -22,19 +22,23 @@ const (
 	tokRBrace      // }
 	tokDblLBracket // [[
 	tokDblRBracket // ]]
+	tokHeredoc     // <<DELIM heredoc opener
+	tokRedirMerge  // 2>&1 stderr→stdout merge
 	tokWord        // everything else
 )
 
 // token is a lexer token.
 type token struct {
 	kind tokenKind
-	val  string // raw text for tokWord
+	val  string   // raw text for tokWord, delimiter for tokHeredoc
+	hd   *Heredoc // populated for tokHeredoc — body filled in at next newline
 }
 
 // lexer scans shell input into tokens.
 type lexer struct {
-	src []byte
-	pos int
+	src             []byte
+	pos             int
+	pendingHeredocs []*Heredoc // heredocs awaiting body capture at next \n
 }
 
 func newLexer(src string) *lexer {
@@ -90,11 +94,26 @@ func (l *lexer) next() token {
 	switch ch {
 	case '\n':
 		l.advance()
+		// Drain any heredocs that opened on the line we just finished —
+		// their bodies start on the next physical line.
+		if len(l.pendingHeredocs) > 0 {
+			l.drainHeredocs()
+		}
 		return token{kind: tokNewline}
 
 	case ';':
 		l.advance()
 		return token{kind: tokSemi}
+
+	case '<':
+		// Recognize <<DELIM and <<-DELIM heredoc openers. Any other use of
+		// `<` (e.g. `< file` redirection) is not supported and is treated as
+		// part of a word so it surfaces as a clear "command not found"
+		// rather than silently dropping data.
+		if l.peekAt(1) == '<' {
+			return l.scanHeredocOpener()
+		}
+		return l.scanWord()
 
 	case '(':
 		// Check for (( arithmetic — just consume as no-op
@@ -205,6 +224,29 @@ func (l *lexer) scanWord() token {
 	var sb strings.Builder
 	for l.pos < len(l.src) {
 		ch := l.peek()
+		// Allow `&` to remain part of the word when it's the `&` in an
+		// fd-merge redirection like `2>&1` or `>&2`. Without this, `2>&1`
+		// would split into the word `2>` plus a `&` separator plus the word
+		// `1`, leading to a confusing `1: command not found`.
+		if ch == '&' && wordEndsWithRedirOp(sb.String()) {
+			if d := l.peekAt(1); d >= '0' && d <= '9' {
+				sb.WriteByte(l.advance()) // &
+				for l.pos < len(l.src) {
+					c := l.peek()
+					if c < '0' || c > '9' {
+						break
+					}
+					sb.WriteByte(l.advance())
+				}
+				// Word is complete (e.g. "2>&1") — return as either a
+				// merge-redirection token or a plain word, depending.
+				val := sb.String()
+				if val == "2>&1" {
+					return token{kind: tokRedirMerge, val: val}
+				}
+				return token{kind: tokWord, val: val}
+			}
+		}
 		if ch == ' ' || ch == '\t' || ch == '\n' || ch == ';' || ch == '|' || ch == '&' || ch == ')' {
 			break
 		}
@@ -393,5 +435,119 @@ func (t *tokenizer) expect(kind tokenKind) token {
 func (t *tokenizer) skipNewlines() {
 	for t.peek().kind == tokNewline {
 		t.next()
+	}
+}
+
+// wordEndsWithRedirOp reports whether the running word value looks like a
+// redirection operator (digit-prefixed or bare `>` / `>>`) so that a
+// following `&` should be folded into the same word rather than ending it.
+func wordEndsWithRedirOp(s string) bool {
+	if s == "" {
+		return false
+	}
+	last := s[len(s)-1]
+	if last != '>' {
+		return false
+	}
+	// Optional fd digits before `>` (e.g. `2>`, `12>`); bare `>` also OK.
+	for i := 0; i < len(s)-1; i++ {
+		c := s[i]
+		if c == '>' {
+			// allow `>>` form too
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// scanHeredocOpener consumes `<<` or `<<-` followed by a delimiter word, then
+// records a pending heredoc whose body will be captured at the next newline.
+// The body is read literally — no parameter expansion is performed.
+func (l *lexer) scanHeredocOpener() token {
+	l.advance() // first <
+	l.advance() // second <
+
+	stripTabs := false
+	if l.pos < len(l.src) && l.peek() == '-' {
+		stripTabs = true
+		l.advance()
+	}
+
+	// Skip whitespace between `<<` and the delimiter.
+	for l.pos < len(l.src) && (l.peek() == ' ' || l.peek() == '\t') {
+		l.advance()
+	}
+
+	// Read the delimiter. May be quoted ('EOF', "EOF") or bare (EOF). In
+	// either case we always treat the body as literal — see Heredoc doc.
+	var delim strings.Builder
+	if l.pos < len(l.src) && (l.peek() == '\'' || l.peek() == '"') {
+		q := l.advance()
+		for l.pos < len(l.src) && l.peek() != q {
+			delim.WriteByte(l.advance())
+		}
+		if l.pos < len(l.src) {
+			l.advance() // closing quote
+		}
+	} else {
+		for l.pos < len(l.src) {
+			c := l.peek()
+			if c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '|' || c == '&' || c == ')' {
+				break
+			}
+			delim.WriteByte(l.advance())
+		}
+	}
+
+	hd := &Heredoc{Delimiter: delim.String(), StripTabs: stripTabs}
+	l.pendingHeredocs = append(l.pendingHeredocs, hd)
+	return token{kind: tokHeredoc, val: hd.Delimiter, hd: hd}
+}
+
+// drainHeredocs consumes body lines from l.src for each pending heredoc,
+// in order, advancing l.pos past the closing delimiter line of the last one.
+// If a delimiter is never found (truncated input), the body absorbs the
+// rest of the source.
+func (l *lexer) drainHeredocs() {
+	pending := l.pendingHeredocs
+	l.pendingHeredocs = nil
+
+	for _, hd := range pending {
+		var body strings.Builder
+		for l.pos < len(l.src) {
+			// Read one line.
+			lineStart := l.pos
+			for l.pos < len(l.src) && l.src[l.pos] != '\n' {
+				l.pos++
+			}
+			line := string(l.src[lineStart:l.pos])
+			// Consume the trailing \n if present.
+			hadNewline := false
+			if l.pos < len(l.src) && l.src[l.pos] == '\n' {
+				l.pos++
+				hadNewline = true
+			}
+
+			cmp := line
+			if hd.StripTabs {
+				cmp = strings.TrimLeft(line, "\t")
+			}
+			if cmp == hd.Delimiter {
+				// End of this heredoc.
+				break
+			}
+
+			if hd.StripTabs {
+				line = strings.TrimLeft(line, "\t")
+			}
+			body.WriteString(line)
+			if hadNewline {
+				body.WriteByte('\n')
+			}
+		}
+		hd.Body = body.String()
 	}
 }
