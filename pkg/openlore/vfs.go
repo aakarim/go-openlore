@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
 )
 
@@ -67,7 +67,7 @@ func (d *DirFS) WriteFile(p string, content []byte) error {
 	hash := hex.EncodeToString(sum[:])
 	_ = d.bus.Publish(context.Background(), eventbus.Event{
 		Kind:        eventbus.KindPostWrite,
-		Path:        bashfs.CleanPath(p),
+		Path:        shell.CleanPath(p),
 		ContentHash: hash,
 		Bytes:       len(content),
 	})
@@ -79,7 +79,7 @@ func (d *DirFS) resolve(p string) string {
 	return filepath.Join(d.root, filepath.FromSlash(p))
 }
 
-func (d *DirFS) Stat(p string) (*bashfs.FileInfo, error) {
+func (d *DirFS) Stat(p string) (*shell.FileInfo, error) {
 	full := d.resolve(p)
 	info, err := os.Stat(full)
 	if err != nil {
@@ -94,16 +94,16 @@ func (d *DirFS) Stat(p string) (*bashfs.FileInfo, error) {
 		return nil, fmt.Errorf("access denied: %s", p)
 	}
 
-	return &bashfs.FileInfo{
+	return &shell.FileInfo{
 		FileName:    info.Name(),
-		FilePath:    bashfs.CleanPath(p),
+		FilePath:    shell.CleanPath(p),
 		FileSize:    info.Size(),
 		FileModTime: info.ModTime(),
 		Dir:         info.IsDir(),
 	}, nil
 }
 
-func (d *DirFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
+func (d *DirFS) ReadDir(p string) ([]shell.FileInfo, error) {
 	if isIgnored(p, d.files) {
 		return nil, fmt.Errorf("access denied: %s", p)
 	}
@@ -114,7 +114,7 @@ func (d *DirFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 		return nil, err
 	}
 
-	var result []bashfs.FileInfo
+	var result []shell.FileInfo
 	for _, e := range entries {
 		childPath := path.Join(p, e.Name())
 		if e.IsDir() {
@@ -131,9 +131,9 @@ func (d *DirFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 		if err != nil {
 			continue
 		}
-		result = append(result, bashfs.FileInfo{
+		result = append(result, shell.FileInfo{
 			FileName:    e.Name(),
-			FilePath:    bashfs.CleanPath(childPath),
+			FilePath:    shell.CleanPath(childPath),
 			FileSize:    info.Size(),
 			FileModTime: info.ModTime(),
 			Dir:         e.IsDir(),
@@ -154,22 +154,22 @@ func (d *DirFS) ReadFile(p string) ([]byte, error) {
 // MergeFS merges multiple filesystems under named mount points.
 // An optional root filesystem serves content directly at "/".
 type MergeFS struct {
-	root   bashfs.FileSystem
-	mounts map[string]bashfs.FileSystem
+	root   shell.FileSystem
+	mounts map[string]shell.FileSystem
 }
 
 // NewMergeFS creates an empty MergeFS.
 func NewMergeFS() *MergeFS {
-	return &MergeFS{mounts: make(map[string]bashfs.FileSystem)}
+	return &MergeFS{mounts: make(map[string]shell.FileSystem)}
 }
 
 // SetRoot sets the root filesystem that serves content at "/".
-func (m *MergeFS) SetRoot(fs bashfs.FileSystem) {
+func (m *MergeFS) SetRoot(fs shell.FileSystem) {
 	m.root = fs
 }
 
 // Mount adds a filesystem under the given name.
-func (m *MergeFS) Mount(name string, fs bashfs.FileSystem) {
+func (m *MergeFS) Mount(name string, fs shell.FileSystem) {
 	m.mounts[name] = fs
 }
 
@@ -181,7 +181,7 @@ func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
 	}
 	filtered := &MergeFS{
 		root:   m.root,
-		mounts: make(map[string]bashfs.FileSystem),
+		mounts: make(map[string]shell.FileSystem),
 	}
 	for name, fs := range m.mounts {
 		if allowedMounts[name] {
@@ -191,7 +191,7 @@ func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
 	return filtered
 }
 
-func (m *MergeFS) resolve(p string) (string, bashfs.FileSystem, error) {
+func (m *MergeFS) resolve(p string) (string, shell.FileSystem, error) {
 	p = path.Clean("/" + p)
 	p = strings.TrimPrefix(p, "/")
 
@@ -219,7 +219,7 @@ func (m *MergeFS) resolve(p string) (string, bashfs.FileSystem, error) {
 	return "", nil, fmt.Errorf("not found: %s", p)
 }
 
-func (m *MergeFS) Stat(p string) (*bashfs.FileInfo, error) {
+func (m *MergeFS) Stat(p string) (*shell.FileInfo, error) {
 	subPath, fsys, err := m.resolve(p)
 	if err != nil {
 		return nil, err
@@ -227,7 +227,7 @@ func (m *MergeFS) Stat(p string) (*bashfs.FileInfo, error) {
 
 	// Root directory
 	if fsys == nil {
-		return &bashfs.FileInfo{
+		return &shell.FileInfo{
 			FileName: "/",
 			FilePath: "/",
 			Dir:      true,
@@ -237,7 +237,7 @@ func (m *MergeFS) Stat(p string) (*bashfs.FileInfo, error) {
 	return fsys.Stat(subPath)
 }
 
-func (m *MergeFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
+func (m *MergeFS) ReadDir(p string) ([]shell.FileInfo, error) {
 	subPath, fsys, err := m.resolve(p)
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ func (m *MergeFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 
 	// Root: merge root FS entries with mount points
 	if fsys == nil {
-		var entries []bashfs.FileInfo
+		var entries []shell.FileInfo
 		if m.root != nil {
 			rootEntries, err := m.root.ReadDir("/")
 			if err == nil {
@@ -253,7 +253,7 @@ func (m *MergeFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 			}
 		}
 		for name := range m.mounts {
-			entries = append(entries, bashfs.FileInfo{
+			entries = append(entries, shell.FileInfo{
 				FileName: name,
 				FilePath: "/" + name,
 				Dir:      true,
@@ -299,7 +299,7 @@ func (e *EmbedFS) resolve(p string) string {
 	return path.Join(e.root, p)
 }
 
-func (e *EmbedFS) Stat(p string) (*bashfs.FileInfo, error) {
+func (e *EmbedFS) Stat(p string) (*shell.FileInfo, error) {
 	full := e.resolve(p)
 	f, err := e.fs.Open(full)
 	if err != nil {
@@ -316,23 +316,23 @@ func (e *EmbedFS) Stat(p string) (*bashfs.FileInfo, error) {
 		return nil, fmt.Errorf("access denied: %s", p)
 	}
 
-	return &bashfs.FileInfo{
+	return &shell.FileInfo{
 		FileName:    info.Name(),
-		FilePath:    bashfs.CleanPath(p),
+		FilePath:    shell.CleanPath(p),
 		FileSize:    info.Size(),
 		FileModTime: info.ModTime(),
 		Dir:         info.IsDir(),
 	}, nil
 }
 
-func (e *EmbedFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
+func (e *EmbedFS) ReadDir(p string) ([]shell.FileInfo, error) {
 	full := e.resolve(p)
 	entries, err := e.fs.ReadDir(full)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []bashfs.FileInfo
+	var result []shell.FileInfo
 	for _, entry := range entries {
 		if entry.IsDir() {
 			childPath := path.Join(p, entry.Name())
@@ -349,9 +349,9 @@ func (e *EmbedFS) ReadDir(p string) ([]bashfs.FileInfo, error) {
 		if err != nil {
 			continue
 		}
-		result = append(result, bashfs.FileInfo{
+		result = append(result, shell.FileInfo{
 			FileName:    entry.Name(),
-			FilePath:    bashfs.CleanPath(path.Join(p, entry.Name())),
+			FilePath:    shell.CleanPath(path.Join(p, entry.Name())),
 			FileSize:    info.Size(),
 			FileModTime: info.ModTime(),
 			Dir:         entry.IsDir(),
@@ -416,7 +416,7 @@ func isIgnored(p string, files config.FilesConfig) bool {
 	return false
 }
 
-// FSAdapter adapts a standard fs.FS to the bashfs.FileSystem interface.
+// FSAdapter adapts a standard fs.FS to the shell.FileSystem interface.
 type FSAdapter struct {
 	fsys fs.FS
 }
@@ -426,7 +426,7 @@ func NewFSAdapter(fsys fs.FS) *FSAdapter {
 	return &FSAdapter{fsys: fsys}
 }
 
-func (a *FSAdapter) Stat(p string) (*bashfs.FileInfo, error) {
+func (a *FSAdapter) Stat(p string) (*shell.FileInfo, error) {
 	p = strings.TrimPrefix(path.Clean("/"+p), "/")
 	if p == "" {
 		p = "."
@@ -435,16 +435,16 @@ func (a *FSAdapter) Stat(p string) (*bashfs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &bashfs.FileInfo{
+	return &shell.FileInfo{
 		FileName:    info.Name(),
-		FilePath:    bashfs.CleanPath("/" + p),
+		FilePath:    shell.CleanPath("/" + p),
 		FileSize:    info.Size(),
 		FileModTime: info.ModTime(),
 		Dir:         info.IsDir(),
 	}, nil
 }
 
-func (a *FSAdapter) ReadDir(p string) ([]bashfs.FileInfo, error) {
+func (a *FSAdapter) ReadDir(p string) ([]shell.FileInfo, error) {
 	p = strings.TrimPrefix(path.Clean("/"+p), "/")
 	if p == "" {
 		p = "."
@@ -453,15 +453,15 @@ func (a *FSAdapter) ReadDir(p string) ([]bashfs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []bashfs.FileInfo
+	var result []shell.FileInfo
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		result = append(result, bashfs.FileInfo{
+		result = append(result, shell.FileInfo{
 			FileName:    e.Name(),
-			FilePath:    bashfs.CleanPath("/" + path.Join(p, e.Name())),
+			FilePath:    shell.CleanPath("/" + path.Join(p, e.Name())),
 			FileSize:    info.Size(),
 			FileModTime: info.ModTime(),
 			Dir:         e.IsDir(),
@@ -478,12 +478,12 @@ func (a *FSAdapter) ReadFile(p string) ([]byte, error) {
 	return fs.ReadFile(a.fsys, p)
 }
 
-// Ensure all types implement bashfs.FileSystem.
+// Ensure all types implement shell.FileSystem.
 var (
-	_ bashfs.FileSystem = (*DirFS)(nil)
-	_ bashfs.FileSystem = (*MergeFS)(nil)
-	_ bashfs.FileSystem = (*EmbedFS)(nil)
-	_ bashfs.FileSystem = (*FSAdapter)(nil)
+	_ shell.FileSystem = (*DirFS)(nil)
+	_ shell.FileSystem = (*MergeFS)(nil)
+	_ shell.FileSystem = (*EmbedFS)(nil)
+	_ shell.FileSystem = (*FSAdapter)(nil)
 )
 
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )
 
 // mapFS is an in-memory filesystem for testing.
@@ -158,7 +158,7 @@ func testFS() *mapFS {
 
 func execCmd(t *testing.T, fs *mapFS, cmd string) (string, string, int) {
 	t.Helper()
-	sh := bashfs.NewShell(fs)
+	sh := shell.NewShell(fs)
 	var out, errOut bytes.Buffer
 	code := sh.ExecPipeline(cmd, &out, &errOut, nil)
 	return out.String(), errOut.String(), code

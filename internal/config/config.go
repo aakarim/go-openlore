@@ -83,7 +83,7 @@ type DocsetSpec struct {
 // source→display mapping.
 type PathMapping struct {
 	Source  string // the real path (relative to root dir or assets/lore)
-	Display string // the path shown in bashfs (empty = same as Source)
+	Display string // the path shown in the shell (empty = same as Source)
 }
 
 // UnmarshalJSON supports both string and {"source": "display"} forms.

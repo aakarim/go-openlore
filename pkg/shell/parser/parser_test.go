@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs/parser"
+	"github.com/aakarim/go-openlore/pkg/shell/parser"
 )
 
 // bashEval runs a shell expression through real bash and returns its stdout.

@@ -10,14 +10,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 )
 
 // LoreBrowserHandler serves an authenticated web browser over the filesystem.
 // Unauthenticated requests are redirected to the passkey login page. The set of
 // paths a session may view is restricted to the docsets granted by the
 // session's lore spec.
-func (p *Passkeys) LoreBrowserHandler(fsys bashfs.FileSystem) http.Handler {
+func (p *Passkeys) LoreBrowserHandler(fsys shell.FileSystem) http.Handler {
 	lorePath := "/" + strings.Trim(p.cfg.LorePath, "/")
 	if lorePath == "/" {
 		lorePath = "/lore"
@@ -39,7 +39,7 @@ func (p *Passkeys) LoreBrowserHandler(fsys bashfs.FileSystem) http.Handler {
 			http.Redirect(w, r, lorePath+"/", http.StatusFound)
 			return
 		}
-		fsPath := bashfs.CleanPath(rel)
+		fsPath := shell.CleanPath(rel)
 
 		if !pathAllowed(fsPath, allowed) {
 			http.Error(w, "403 forbidden", http.StatusForbidden)
@@ -91,7 +91,7 @@ func (p *Passkeys) allowedPrefixes(lore string) []string {
 			if disp == "" {
 				disp = pm.Source
 			}
-			prefixes = append(prefixes, bashfs.CleanPath(disp))
+			prefixes = append(prefixes, shell.CleanPath(disp))
 		}
 	}
 	return prefixes
@@ -114,7 +114,7 @@ func pathAllowed(p string, allowed []string) bool {
 	return false
 }
 
-func (p *Passkeys) renderDir(w http.ResponseWriter, fsys bashfs.FileSystem, lorePath, fsPath string, allowed []string) {
+func (p *Passkeys) renderDir(w http.ResponseWriter, fsys shell.FileSystem, lorePath, fsPath string, allowed []string) {
 	entries, err := fsys.ReadDir(fsPath)
 	if err != nil {
 		http.Error(w, "404 not found", http.StatusNotFound)

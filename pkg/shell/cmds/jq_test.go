@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 )
 
 func TestJqField(t *testing.T) {
@@ -14,14 +14,14 @@ func TestJqField(t *testing.T) {
 }
 
 func TestJqPipe(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("jq '.items | length' /docs/data.json", &out, &errOut, nil)
 	if strings.TrimSpace(out.String()) != "3" { t.Errorf("jq pipe: got %q", out.String()) }
 }
 
 func TestJqSelect(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("jq '.[] | select(.active)' /docs/users.json", &out, &errOut, nil)
 	if !strings.Contains(out.String(), "alice") { t.Errorf("jq select: got %q", out.String()) }
@@ -34,7 +34,7 @@ func TestJqMap(t *testing.T) {
 }
 
 func TestJqObjectConstruct(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("jq '{n: .name, a: .age}' /docs/data.json", &out, &errOut, nil)
 	if !strings.Contains(out.String(), "alice") || !strings.Contains(out.String(), "30") {
@@ -43,7 +43,7 @@ func TestJqObjectConstruct(t *testing.T) {
 }
 
 func TestJqSortBy(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out bytes.Buffer
 	sh.Exec("jq 'sort_by(.age)' /docs/users.json", &out, &bytes.Buffer{}, nil)
 	bobIdx := strings.Index(out.String(), "bob")
@@ -54,7 +54,7 @@ func TestJqSortBy(t *testing.T) {
 }
 
 func TestJqAdd(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out bytes.Buffer
 	sh.Exec("jq '.items | add' /docs/data.json", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "6" {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs/parser"
+	"github.com/aakarim/go-openlore/pkg/shell/parser"
 )
 
 func TestHeredocCapturesBody(t *testing.T) {

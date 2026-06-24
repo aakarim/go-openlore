@@ -18,8 +18,8 @@ import (
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
 	"github.com/charmbracelet/wish/logging"
@@ -29,13 +29,13 @@ import (
 
 // SessionFSFn returns the filesystem to use for a given SSH session identity.
 // The default implementation returns the base FS unchanged.
-type SessionFSFn func(id Identity, base bashfs.FileSystem) bashfs.FileSystem
+type SessionFSFn func(id Identity, base shell.FileSystem) shell.FileSystem
 
 // Server is the main OpenLore SSH server.
 type Server struct {
 	config   config.Config
 	auth     *config.AuthConfig
-	fs       bashfs.FileSystem
+	fs       shell.FileSystem
 	merge    *MergeFS
 	metrics  *metrics.Metrics
 	srv      *ssh.Server
@@ -184,8 +184,8 @@ func (s *Server) Config() config.Config {
 	return s.config
 }
 
-// Mount adds a named filesystem mount point using a bashfs.FileSystem.
-func (s *Server) Mount(name string, fs bashfs.FileSystem) {
+// Mount adds a named filesystem mount point using a shell.FileSystem.
+func (s *Server) Mount(name string, fs shell.FileSystem) {
 	s.merge.Mount(name, fs)
 }
 
@@ -199,9 +199,9 @@ func (s *Server) SetRootFS(fsys fs.FS) {
 	s.merge.SetRoot(NewFSAdapter(fsys))
 }
 
-// SetRootBashFS sets the root filesystem using a bashfs.FileSystem. Paths
+// SetRootBashFS sets the root filesystem using a shell.FileSystem. Paths
 // that don't match any mount fall through to this filesystem.
-func (s *Server) SetRootBashFS(fsys bashfs.FileSystem) {
+func (s *Server) SetRootBashFS(fsys shell.FileSystem) {
 	s.merge.SetRoot(fsys)
 }
 
@@ -230,7 +230,7 @@ func (s *Server) OnDisconnect(fn OnDisconnectFunc) {
 }
 
 // FileSystem returns the server's filesystem.
-func (s *Server) FileSystem() bashfs.FileSystem {
+func (s *Server) FileSystem() shell.FileSystem {
 	return s.fs
 }
 
@@ -388,7 +388,7 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 		}()
 
 		// Build per-session filesystem filtered by lore (the identity's docsets)
-		sessionFS := bashfs.FileSystem(s.merge)
+		sessionFS := shell.FileSystem(s.merge)
 		if id.LoreName != "" && s.auth != nil {
 			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
 				allowed := make(map[string]bool)
@@ -402,7 +402,7 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 			sessionFS = s.sessionFSFn(id, sessionFS)
 		}
 
-		shell := bashfs.NewShell(sessionFS)
+		shell := shell.NewShell(sessionFS)
 		if s.config.DefaultCwd != "" {
 			shell.SetCwd(s.config.DefaultCwd)
 		}

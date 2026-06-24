@@ -16,7 +16,7 @@ import (
 	"github.com/aakarim/go-openlore/assets"
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/internal/mcpserver"
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	openlore "github.com/aakarim/go-openlore/pkg/openlore"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	gossh "golang.org/x/crypto/ssh"

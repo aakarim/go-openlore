@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 )
 
 func TestEnv(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("FOO", "bar")
 	var out bytes.Buffer
 	sh.Exec("env", &out, &bytes.Buffer{}, nil)
@@ -19,7 +19,7 @@ func TestEnv(t *testing.T) {
 }
 
 func TestPrintenv(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("MY_VAR", "hello")
 	var out bytes.Buffer
 	sh.Exec("printenv MY_VAR", &out, &bytes.Buffer{}, nil)

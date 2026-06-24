@@ -38,7 +38,7 @@ type FileSystem interface {
 }
 
 // CmdContext provides the interface that commands use to interact with the shell.
-// Implemented by bashfs.Shell.
+// Implemented by shell.Shell.
 type CmdContext interface {
 	FS() FileSystem
 	Cwd() string

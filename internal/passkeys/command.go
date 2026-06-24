@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )
 
 const passkeyHelp = `

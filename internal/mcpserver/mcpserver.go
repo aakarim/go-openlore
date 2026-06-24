@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -75,7 +75,7 @@ func WithEnvVars(vars map[string]string) Option {
 }
 
 // New creates an MCP server backed by the given filesystem.
-func New(fs bashfs.FileSystem, opts ...Option) *mcp.Server {
+func New(fs shell.FileSystem, opts ...Option) *mcp.Server {
 	var cfg serverConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -128,13 +128,13 @@ type shellInput struct {
 	Command string `json:"command" jsonschema:"The bash command to execute (e.g. grep -r auth /docs)"`
 }
 
-func newShellHandler(fs bashfs.FileSystem, auth AuthResolver, envVars map[string]string) mcp.ToolHandlerFor[shellInput, any] {
+func newShellHandler(fs shell.FileSystem, auth AuthResolver, envVars map[string]string) mcp.ToolHandlerFor[shellInput, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input shellInput) (*mcp.CallToolResult, any, error) {
 		if input.Command == "" {
 			return toolError("command is required")
 		}
 
-		shell := bashfs.NewShell(fs)
+		shell := shell.NewShell(fs)
 
 		// Apply static env vars (e.g., agent_id from HTTP auth middleware)
 		for k, v := range envVars {

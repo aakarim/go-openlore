@@ -1,4 +1,4 @@
-package bashfs
+package shell
 
 import (
 	"fmt"
@@ -6,10 +6,10 @@ import (
 	"path"
 	"time"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )
 
-// FileSystem is the interface that bashfs operates on.
+// FileSystem is the interface that the shell operates on.
 type FileSystem = cmds.FileSystem
 
 // FileInfo represents a file or directory in the virtual filesystem.

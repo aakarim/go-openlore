@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
-	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
+	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -48,7 +48,7 @@ func WithMCPEnvVars(vars map[string]string) MCPOption {
 // NewMCPServer creates an MCP server backed by the given filesystem. The
 // returned server exposes two tools — `shell` and `list_commands` — that let
 // agents browse and operate on the filesystem via a restricted shell.
-func NewMCPServer(fs bashfs.FileSystem, opts ...MCPOption) *mcp.Server {
+func NewMCPServer(fs shell.FileSystem, opts ...MCPOption) *mcp.Server {
 	var cfg mcpConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -89,7 +89,7 @@ type mcpShellInput struct {
 	Command string `json:"command" jsonschema:"The bash command to execute (e.g. grep -r auth /docs)"`
 }
 
-func newMCPShellHandler(fs bashfs.FileSystem, envVars map[string]string) mcp.ToolHandlerFor[mcpShellInput, any] {
+func newMCPShellHandler(fs shell.FileSystem, envVars map[string]string) mcp.ToolHandlerFor[mcpShellInput, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input mcpShellInput) (*mcp.CallToolResult, any, error) {
 		if input.Command == "" {
 			return &mcp.CallToolResult{
@@ -98,7 +98,7 @@ func newMCPShellHandler(fs bashfs.FileSystem, envVars map[string]string) mcp.Too
 			}, nil, nil
 		}
 
-		shell := bashfs.NewShell(fs)
+		shell := shell.NewShell(fs)
 		for k, v := range envVars {
 			shell.SetEnv(k, v)
 		}

@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 )
 
 func TestCd(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("cd /docs", &out, &errOut, nil)
 	out.Reset()

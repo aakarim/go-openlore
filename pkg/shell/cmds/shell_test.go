@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/shell"
 )
 
 func TestSplitArgs(t *testing.T) {
-	got := bashfs.SplitArgs(`echo "hello world"`)
+	got := shell.SplitArgs(`echo "hello world"`)
 	if len(got) != 2 || got[1] != "hello world" { t.Errorf("SplitArgs: got %v", got) }
 }
 
@@ -64,7 +64,7 @@ func TestNegation(t *testing.T) {
 }
 
 func TestVariableExpansion(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("NAME", "alice")
 	var out bytes.Buffer
 	sh.ExecPipeline("echo $NAME", &out, &bytes.Buffer{}, nil)
@@ -74,7 +74,7 @@ func TestVariableExpansion(t *testing.T) {
 }
 
 func TestVariableAssignment(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out bytes.Buffer
 	sh.ExecPipeline("FOO=hello; echo $FOO", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "hello" {
@@ -83,7 +83,7 @@ func TestVariableAssignment(t *testing.T) {
 }
 
 func TestVariableDefault(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	var out bytes.Buffer
 	sh.ExecPipeline("echo ${UNSET:-default}", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "default" {
@@ -117,7 +117,7 @@ func TestIfElse(t *testing.T) {
 }
 
 func TestDoubleQuoteExpansion(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("WHO", "world")
 	var out bytes.Buffer
 	sh.ExecPipeline(`echo "hello $WHO"`, &out, &bytes.Buffer{}, nil)
@@ -127,7 +127,7 @@ func TestDoubleQuoteExpansion(t *testing.T) {
 }
 
 func TestSingleQuoteNoExpansion(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("WHO", "world")
 	var out bytes.Buffer
 	sh.ExecPipeline("echo '$WHO'", &out, &bytes.Buffer{}, nil)
@@ -144,7 +144,7 @@ func TestSubshell(t *testing.T) {
 }
 
 func TestPipeWithVariableExpansion(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("PAT", "alice")
 	var out bytes.Buffer
 	sh.ExecPipeline("cat /docs/data.csv | grep $PAT", &out, &bytes.Buffer{}, nil)
@@ -168,7 +168,7 @@ func TestNestedCommandSubstitution(t *testing.T) {
 }
 
 func TestVariableLengthExpansion(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("WORD", "hello")
 	var out bytes.Buffer
 	sh.ExecPipeline("echo ${#WORD}", &out, &bytes.Buffer{}, nil)
@@ -178,7 +178,7 @@ func TestVariableLengthExpansion(t *testing.T) {
 }
 
 func TestVariableAlternate(t *testing.T) {
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetEnv("SET", "yes")
 	var out bytes.Buffer
 	sh.ExecPipeline("echo ${SET:+was set}", &out, &bytes.Buffer{}, nil)
@@ -198,7 +198,7 @@ func TestForLoopWithCmdSub(t *testing.T) {
 
 func TestPromptFormat(t *testing.T) {
 	// Ensure the prompt doesn't produce Go fmt EXTRA warnings
-	sh := bashfs.NewShell(testFS())
+	sh := shell.NewShell(testFS())
 	sh.SetCwd("/docs")
 	var out bytes.Buffer
 	// The prompt format should work without %!(EXTRA ...) errors
