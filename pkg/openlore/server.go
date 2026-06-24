@@ -475,13 +475,21 @@ func (s *Server) ListenAndServe() error {
 
 	if s.config.AllowKeyless {
 		opts = append(opts, ssh.EmulatePty())
-		// Truly keyless: we don't set PublicKeyHandler so gliderlabs/ssh
-		// flips NoClientAuth=true (see gliderlabs/ssh/server.go:
-		// "if PasswordHandler==nil && PublicKeyHandler==nil && ..."). This
-		// lets clients without any SSH key (fresh containers, CI runners,
-		// people running `ssh` from a brand-new VM) connect anonymously.
-		// Clients that *do* have keys still connect fine — they just end up
-		// authenticating with the `none` method instead of `publickey`.
+		// Keyless mode accepts everyone, but we must still capture the
+		// client's public key when they present one so identity-based access
+		// (lore, publish docsets, whoami) resolves. We therefore set a
+		// PublicKeyAuth handler that accepts any key — this makes
+		// sess.PublicKey() available for matching in buildIdentity. To still
+		// admit clients with *no* key at all (fresh containers, CI runners,
+		// brand-new VMs), we additionally enable keyboard-interactive auth
+		// that auto-succeeds. Key-bearing clients authenticate via publickey
+		// (key captured); keyless clients fall back to keyboard-interactive.
+		opts = append(opts, ssh.PublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
+			return true
+		}))
+		opts = append(opts, ssh.KeyboardInteractiveAuth(func(ctx ssh.Context, challenger gossh.KeyboardInteractiveChallenge) bool {
+			return true
+		}))
 	} else {
 		opts = append(opts, ssh.PublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
 			if s.config.UnknownIdentity == "deny" && s.auth != nil {
