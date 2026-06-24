@@ -27,9 +27,21 @@ find / -name "*.md"
 cat /docs/api.json | jq '.endpoints[]'
 ```
 
+### Publishing
+
+Publish content to a writable docset:
+
+```bash
+# List writable docsets
+publish
+
+# Publish a file
+echo "# My Research Notes" | publish <docset> research/notes.md
+```
+
 ### Available Commands
 
-ls, cat, head, tail, grep, find, tree, stat, wc, sort, uniq, cut, sed, awk, tr, jq, xargs, and more. Run `help` for the full list.
+ls, cat, head, tail, grep, find, tree, stat, wc, sort, uniq, cut, sed, awk, tr, jq, xargs, publish, and more. Run `help` for the full list.
 
 ### SFTP Mounting
 

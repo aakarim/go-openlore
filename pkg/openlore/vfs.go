@@ -1,7 +1,10 @@
 package openlore
 
 import (
+	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -11,17 +14,64 @@ import (
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/bashfs"
+	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
 )
 
 // DirFS serves files from a real directory on disk.
+//
+// DirFS is read-only by default. Call WithBus(...) to obtain a copy that
+// supports WriteFile and emits a KindPostWrite event on each successful
+// write. (P1-06.)
 type DirFS struct {
 	root  string
 	files config.FilesConfig
+	bus   *eventbus.Bus // optional; nil means writes are rejected
 }
 
 // NewDirFS creates a new DirFS rooted at the given directory.
 func NewDirFS(root string, files config.FilesConfig) *DirFS {
 	return &DirFS{root: root, files: files}
+}
+
+// WithBus returns a copy of DirFS that allows writes via WriteFile and fans
+// every successful write out as a KindPostWrite event on the supplied bus.
+// Pass nil to disable writes.
+func (d *DirFS) WithBus(bus *eventbus.Bus) *DirFS {
+	c := *d
+	c.bus = bus
+	return &c
+}
+
+// WriteFile writes content to the path inside the DirFS root. Errors if the
+// DirFS was constructed without a bus (read-only mode). On success, emits a
+// KindPostWrite event so subscribers (DB writer, SSE fanout, Notifier,
+// post_write shell hooks) can react.
+func (d *DirFS) WriteFile(p string, content []byte) error {
+	if d.bus == nil {
+		return fmt.Errorf("read-only: DirFS has no event bus configured")
+	}
+	if !isAllowed(path.Base(p), d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	if isIgnored(p, d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	full := d.resolve(p)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	_ = d.bus.Publish(context.Background(), eventbus.Event{
+		Kind:        eventbus.KindPostWrite,
+		Path:        bashfs.CleanPath(p),
+		ContentHash: hash,
+		Bytes:       len(content),
+	})
+	return nil
 }
 
 func (d *DirFS) resolve(p string) string {
@@ -121,6 +171,24 @@ func (m *MergeFS) SetRoot(fs bashfs.FileSystem) {
 // Mount adds a filesystem under the given name.
 func (m *MergeFS) Mount(name string, fs bashfs.FileSystem) {
 	m.mounts[name] = fs
+}
+
+// FilteredView returns a new MergeFS that only includes the specified mount names.
+// The root filesystem is always included. If allowedMounts is nil, returns the original.
+func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
+	if allowedMounts == nil {
+		return m
+	}
+	filtered := &MergeFS{
+		root:   m.root,
+		mounts: make(map[string]bashfs.FileSystem),
+	}
+	for name, fs := range m.mounts {
+		if allowedMounts[name] {
+			filtered.mounts[name] = fs
+		}
+	}
+	return filtered
 }
 
 func (m *MergeFS) resolve(p string) (string, bashfs.FileSystem, error) {

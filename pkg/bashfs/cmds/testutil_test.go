@@ -160,7 +160,7 @@ func execCmd(t *testing.T, fs *mapFS, cmd string) (string, string, int) {
 	t.Helper()
 	sh := bashfs.NewShell(fs)
 	var out, errOut bytes.Buffer
-	code := sh.ExecPipeline(cmd, &out, &errOut)
+	code := sh.ExecPipeline(cmd, &out, &errOut, nil)
 	return out.String(), errOut.String(), code
 }
 

@@ -6,10 +6,12 @@ set -euo pipefail
 #
 #   scp openlore-linux <admin>@<host>:/tmp/openlore
 #   scp -r skills <admin>@<host>:/tmp/openlore-skills
+#   scp lore.json <admin>@<host>:/tmp/openlore-lore.json
 #   ssh <admin>@<host> 'bash -s' < setup.sh
 
 BINARY="${1:-/tmp/openlore}"
 SKILLS_SRC="${2:-/tmp/openlore-skills}"
+LORE_JSON="${3:-/tmp/openlore-lore.json}"
 INSTALL_DIR="/opt/openlore"
 USER="openlore"
 
@@ -20,6 +22,7 @@ fi
 
 echo "==> Setting up $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR/skills" "$INSTALL_DIR/.ssh"
+mkdir -p "$INSTALL_DIR/published"/{knowledge,research,pipeline,runbooks,memory}
 
 echo "==> Installing binary..."
 cp "$BINARY" "$INSTALL_DIR/openlore"
@@ -28,6 +31,11 @@ chmod +x "$INSTALL_DIR/openlore"
 echo "==> Installing skills..."
 if [ -d "$SKILLS_SRC" ]; then
     cp -r "$SKILLS_SRC"/* "$INSTALL_DIR/skills/"
+fi
+
+echo "==> Installing auth config..."
+if [ -f "$LORE_JSON" ]; then
+    cp "$LORE_JSON" "$INSTALL_DIR/lore.json"
 fi
 
 chown -R "$USER:$USER" "$INSTALL_DIR"
@@ -43,7 +51,7 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/openlore -p 2222 --metrics-port 0 --host-key $INSTALL_DIR/.ssh/openlore_ed25519
+ExecStart=$INSTALL_DIR/openlore --skills-dir $INSTALL_DIR/skills -p 2222 --http-port 8080 --metrics-port 0 --host-key $INSTALL_DIR/.ssh/openlore_ed25519 --auth $INSTALL_DIR/lore.json
 Restart=always
 RestartSec=5
 
@@ -51,7 +59,7 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=$INSTALL_DIR/.ssh
+ReadWritePaths=$INSTALL_DIR/.ssh $INSTALL_DIR/published
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

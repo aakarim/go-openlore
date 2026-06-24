@@ -30,11 +30,23 @@ type Config struct {
 	HostCertFile    string
 	Files        FilesConfig
 	Folders      []FolderConfig
+	Passkeys     PasskeysConfig
 	Logger       *slog.Logger
 
 	// Track sources for conflict detection.
 	configFileLoaded   bool
 	embeddedConfigUsed bool
+}
+
+// PasskeysConfig holds WebAuthn passkey configuration.
+type PasskeysConfig struct {
+	Enabled      bool
+	RPID         string
+	RPName       string
+	RPOrigins    []string
+	LorePath     string
+	PasskeysFile string
+	SessionTTL   string // parsed as time.Duration
 }
 
 // FilesConfig controls which files are served.
@@ -52,16 +64,19 @@ type FolderConfig struct {
 
 // AuthConfig is loaded from lore.json.
 type AuthConfig struct {
-	AllowKeyless    *bool               `json:"allow_keyless,omitempty"`
-	UnknownIdentity string              `json:"unknown_identity,omitempty"`
-	DefaultCwd      string              `json:"default_cwd,omitempty"`
-	Lore            map[string]LoreSpec `json:"lore"`
-	Identities      []AuthIdentity      `json:"identities"`
+	AllowKeyless    *bool                  `json:"allow_keyless,omitempty"`
+	UnknownIdentity string                 `json:"unknown_identity,omitempty"`
+	DefaultCwd      string                 `json:"default_cwd,omitempty"`
+	Docsets         map[string]DocsetSpec  `json:"docsets"`
+	Lore            map[string][]string    `json:"lore"`
+	Identities      []AuthIdentity         `json:"identities"`
 }
 
-// LoreSpec defines a named set of path mappings.
-type LoreSpec struct {
-	Paths []PathMapping `json:"paths"`
+// DocsetSpec defines a named set of path mappings.
+type DocsetSpec struct {
+	Paths          []PathMapping `json:"paths"`
+	PublishDir     string        `json:"publish_dir,omitempty"`
+	MaxPublishSize int64         `json:"max_publish_size,omitempty"` // bytes; 0 = use default (2.5MB)
 }
 
 // PathMapping represents a path entry — either a simple string path or a
@@ -98,10 +113,11 @@ func (p *PathMapping) UnmarshalJSON(data []byte) error {
 
 // AuthIdentity defines a user identity with access to a lore spec.
 type AuthIdentity struct {
-	Name      string `json:"name"`
-	Comment   string `json:"comment,omitempty"`
-	PublicKey string `json:"public_key"`
-	Lore      string `json:"lore"`
+	Name      string   `json:"name"`
+	Comment   string   `json:"comment,omitempty"`
+	PublicKey string   `json:"public_key"`
+	Lore      string   `json:"lore"`
+	Publish   []string `json:"publish,omitempty"` // writable docsets; empty = all in lore
 }
 
 // Option is a functional option for configuring the server.
@@ -126,6 +142,17 @@ type fileConfig struct {
 	DefaultCwd   string         `yaml:"default_cwd"`
 	Files        *filesYAML     `yaml:"files"`
 	Folders      []FolderConfig `yaml:"folders"`
+	Passkeys     *passkeysYAML  `yaml:"passkeys"`
+}
+
+type passkeysYAML struct {
+	Enabled      bool     `yaml:"enabled"`
+	RPID         string   `yaml:"rp_id"`
+	RPName       string   `yaml:"rp_name"`
+	RPOrigins    []string `yaml:"rp_origins"`
+	LorePath     string   `yaml:"lore_path"`
+	PasskeysFile string   `yaml:"passkeys_file"`
+	SessionTTL   string   `yaml:"session_ttl"`
 }
 
 type filesYAML struct {
@@ -148,6 +175,7 @@ func New(opts ...Option) (Config, error) {
 		Files: FilesConfig{
 			Allowed: []string{
 				"*.md", "*.markdown", "*.txt",
+				"*.html", "*.htm", "*.css", "*.js",
 				"*.json", "*.yaml", "*.yml",
 				"*.csv", "*.tsv", "*.xml", "*.toml",
 				"*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.webp",
@@ -253,6 +281,7 @@ func WithConfigFile(path string) Option {
 		if len(fc.Folders) > 0 {
 			cfg.Folders = fc.Folders
 		}
+		applyPasskeysConfig(cfg, fc.Passkeys)
 
 		return nil
 	}
@@ -332,7 +361,8 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if len(fc.Folders) > 0 {
 				cfg.Folders = fc.Folders
 			}
-			}
+			applyPasskeysConfig(cfg, fc.Passkeys)
+		}
 
 			// MOTD fallback: only set if nothing else has set it yet
 			if cfg.MOTD == "" && motdFallback != "" {
@@ -478,6 +508,40 @@ func WithTLS(cert, key string) Option {
 	}
 }
 
+// applyPasskeysConfig merges a passkeysYAML into the config.
+func applyPasskeysConfig(cfg *Config, pk *passkeysYAML) {
+	if pk == nil {
+		return
+	}
+	cfg.Passkeys.Enabled = pk.Enabled
+	if pk.RPID != "" {
+		cfg.Passkeys.RPID = pk.RPID
+	}
+	if pk.RPName != "" {
+		cfg.Passkeys.RPName = pk.RPName
+	}
+	if len(pk.RPOrigins) > 0 {
+		cfg.Passkeys.RPOrigins = pk.RPOrigins
+	}
+	if pk.LorePath != "" {
+		cfg.Passkeys.LorePath = pk.LorePath
+	}
+	if pk.PasskeysFile != "" {
+		cfg.Passkeys.PasskeysFile = pk.PasskeysFile
+	}
+	if pk.SessionTTL != "" {
+		cfg.Passkeys.SessionTTL = pk.SessionTTL
+	}
+}
+
+// WithPasskeys sets the passkeys configuration.
+func WithPasskeys(pk PasskeysConfig) Option {
+	return func(cfg *Config) error {
+		cfg.Passkeys = pk
+		return nil
+	}
+}
+
 // LoadAuthConfig loads auth configuration from a JSON file.
 func LoadAuthConfig(path string) (*AuthConfig, error) {
 	data, err := os.ReadFile(path)
@@ -492,7 +556,15 @@ func LoadAuthConfig(path string) (*AuthConfig, error) {
 
 	for _, ident := range auth.Identities {
 		if _, ok := auth.Lore[ident.Lore]; !ok {
-			return nil, fmt.Errorf("identity %q references unknown lore spec %q", ident.Name, ident.Lore)
+			return nil, fmt.Errorf("identity %q references unknown lore %q", ident.Name, ident.Lore)
+		}
+	}
+
+	for loreName, docsetNames := range auth.Lore {
+		for _, ds := range docsetNames {
+			if _, ok := auth.Docsets[ds]; !ok {
+				return nil, fmt.Errorf("lore %q references unknown docset %q", loreName, ds)
+			}
 		}
 	}
 

@@ -83,6 +83,29 @@ For automated builds, use the OpenLore GitHub Action:
 
 This produces binaries for Linux, macOS, and Windows.
 
+## Setting Up Passkeys (Browser Access for Humans)
+
+Passkeys let humans browse your docs in a web browser using WebAuthn (Face ID, Touch ID, security keys).
+
+1. Add to your `openlore.yml`:
+   ```yaml
+   passkeys:
+     enabled: true
+     rp_id: localhost                      # or your domain
+     rp_origins: ["http://localhost:8080"]  # must match HTTP server origin
+   ```
+
+2. Start the server, connect via SSH, and register:
+   ```bash
+   ssh -p 2222 localhost "passkey register --name 'My Laptop'"
+   ```
+
+3. Open the printed URL in a browser to complete registration.
+
+4. Browse docs at `http://localhost:8080/lore/`.
+
+Run `passkey help` in the SSH shell for all options, or see `/docs/passkeys.md` for full details.
+
 ## Exporting Embedded Docs
 
 To extract docs from an existing OpenLore binary:

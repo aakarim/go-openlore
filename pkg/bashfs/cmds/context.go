@@ -49,7 +49,7 @@ type CmdContext interface {
 	DeleteEnv(key string)
 	AllEnv() map[string]string
 	Exec(cmdLine string, w io.Writer, errW io.Writer, stdin io.Reader) int
-	ExecPipeline(line string, w io.Writer, errW io.Writer) int
+	ExecPipeline(line string, w io.Writer, errW io.Writer, stdin io.Reader) int
 }
 
 // WalkDir walks the filesystem tree rooted at root, calling fn for each file or directory.

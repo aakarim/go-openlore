@@ -7,6 +7,10 @@
     "agents": {
       "description": "Get an AGENTS.md snippet for your AI agents",
       "file": "agents.md"
+    },
+    "passkeys": {
+      "description": "Register passkeys for browser access to docs",
+      "file": "passkeys.md"
     }
   }
 }

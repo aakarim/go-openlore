@@ -88,6 +88,10 @@ func init() {
 	Register("help", CmdHelp)
 	Register("skills", CmdSkills)
 	Register("version", CmdVersion)
+	// publishing
+	Register("publish", CmdPublish)
+	// identity
+	Register("whoami", CmdWhoami)
 }
 
 // Register adds a command to the registry.

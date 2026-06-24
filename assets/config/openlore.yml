@@ -5,3 +5,28 @@ external_ssh_port: 22
 http_port: 8080
 metrics_port: 0
 default_cwd: /
+auth_file: ./lore.json
+
+passkeys:
+  enabled: true
+  rp_id: openlore.sh
+  rp_name: OpenLore
+  rp_origins:
+    - https://openlore.sh
+  lore_path: /lore
+  passkeys_file: ./config/passkeys.json
+  session_ttl: 24h
+
+folders:
+  - name: knowledge
+    path: ./published/knowledge
+  - name: jared
+    path: ./published/jared
+  - name: claw
+    path: ./published/claw
+  - name: cor
+    path: ./published/cor
+  - name: ray
+    path: ./published/ray
+  - name: razer
+    path: ./published/razer

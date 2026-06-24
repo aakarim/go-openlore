@@ -73,8 +73,9 @@ func (s *Shell) Exec(cmdLine string, w io.Writer, errW io.Writer, stdin io.Reade
 }
 
 // ExecPipeline parses a shell line and executes the resulting AST.
-func (s *Shell) ExecPipeline(line string, w io.Writer, errW io.Writer) int {
-	return s.execLine(line, w, errW, nil)
+// stdin is optional — pass nil if no external stdin is available.
+func (s *Shell) ExecPipeline(line string, w io.Writer, errW io.Writer, stdin io.Reader) int {
+	return s.execLine(line, w, errW, stdin)
 }
 
 func (s *Shell) execLine(line string, w io.Writer, errW io.Writer, stdin io.Reader) int {
@@ -552,7 +553,7 @@ func (s *Shell) RunInteractive(rw io.ReadWriter, errW io.Writer, motd string, pr
 				return
 			}
 			if line != "" {
-				s.ExecPipeline(line, rw, rw)
+				s.ExecPipeline(line, rw, rw, nil)
 			}
 			printPrompt()
 		case ch == '\t': // Tab — ignore

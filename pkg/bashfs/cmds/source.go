@@ -25,7 +25,7 @@ func CmdSource(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		exitCode = ctx.ExecPipeline(line, w, errW)
+		exitCode = ctx.ExecPipeline(line, w, errW, nil)
 	}
 	return exitCode
 }
@@ -35,5 +35,5 @@ func CmdEval(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 		return 0
 	}
 	cmdLine := strings.Join(args, " ")
-	return ctx.ExecPipeline(cmdLine, w, errW)
+	return ctx.ExecPipeline(cmdLine, w, errW, nil)
 }

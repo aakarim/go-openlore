@@ -1,2 +1,6 @@
 .ssh/
 *.db
+
+# Built binaries
+/openlore
+/lix

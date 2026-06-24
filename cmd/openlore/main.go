@@ -219,17 +219,21 @@ func main() {
 						os.Exit(1)
 					}
 				} else if os.IsNotExist(readErr) {
-					auth.Lore = make(map[string]openlore.LoreSpec)
-					auth.Lore["default"] = openlore.LoreSpec{Paths: []openlore.PathMapping{{Source: "/", Display: "/"}}}
+					auth.Docsets = map[string]openlore.DocsetSpec{
+						"all": {Paths: []openlore.PathMapping{{Source: "/", Display: "/"}}},
+					}
+					auth.Lore = map[string][]string{
+						"default": {"all"},
+					}
 				} else {
 					fmt.Fprintf(os.Stderr, "error: reading %s: %v\n", *authPath, readErr)
 					os.Exit(1)
 				}
 
-				// Check lore spec exists
+				// Check lore name exists
 				if _, ok := auth.Lore[*loreName]; !ok {
-					fmt.Fprintf(os.Stderr, "error: lore spec %q not found in %s\n", *loreName, *authPath)
-					fmt.Fprintf(os.Stderr, "Available specs: ")
+					fmt.Fprintf(os.Stderr, "error: lore %q not found in %s\n", *loreName, *authPath)
+					fmt.Fprintf(os.Stderr, "Available lore: ")
 					for k := range auth.Lore {
 						fmt.Fprintf(os.Stderr, "%s ", k)
 					}

@@ -9,13 +9,15 @@ import (
 
 // Identity represents a connected SSH user.
 type Identity struct {
-	RemoteAddr  string
-	User        string
-	PublicKey   ssh.PublicKey
-	SessionID   string
-	ConnectedAt time.Time
-	LoreName    string               // name of the lore spec this identity uses
-	PathAccess  []config.PathMapping // resolved path mappings
+	RemoteAddr     string
+	User           string
+	PublicKey      ssh.PublicKey
+	SessionID      string
+	ConnectedAt    time.Time
+	IdentityName   string               // matched identity name from auth config
+	LoreName       string               // name of the lore spec this identity uses
+	PathAccess     []config.PathMapping // resolved path mappings
+	PublishDocsets []string             // writable docsets (nil = all in lore)
 }
 
 // OnConnectFunc is called when a new SSH session is established.

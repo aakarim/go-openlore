@@ -12,6 +12,11 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// MuxExtender can register additional handlers on the HTTP mux.
+type MuxExtender interface {
+	RegisterHTTPHandlers(mux *http.ServeMux)
+}
+
 // Config holds HTTP server configuration.
 type Config struct {
 	Port        int
@@ -20,6 +25,8 @@ type Config struct {
 	HostKeyPath string
 	SSHPort     int
 	Logger      *slog.Logger
+	Extenders   []MuxExtender
+	ExtraHandlers map[string]http.Handler
 }
 
 // Server is the HTTP front page server.
@@ -34,6 +41,13 @@ func New(fsys fs.FS, cfg Config) *Server {
 
 	if cfg.HostKeyPath != "" {
 		mux.HandleFunc("/host-key", hostKeyHandler(cfg.HostKeyPath, cfg.SSHPort))
+	}
+
+	for _, ext := range cfg.Extenders {
+		ext.RegisterHTTPHandlers(mux)
+	}
+	for pattern, handler := range cfg.ExtraHandlers {
+		mux.Handle(pattern, handler)
 	}
 
 	mux.Handle("/", http.FileServer(http.FS(fsys)))

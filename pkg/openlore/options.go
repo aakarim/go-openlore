@@ -20,14 +20,17 @@ type FolderConfig = config.FolderConfig
 // AuthConfig is loaded from auth.json.
 type AuthConfig = config.AuthConfig
 
-// LoreSpec defines a named set of path mappings.
-type LoreSpec = config.LoreSpec
+// DocsetSpec defines a named set of path mappings for a docset.
+type DocsetSpec = config.DocsetSpec
 
 // PathMapping represents a path entry.
 type PathMapping = config.PathMapping
 
 // AuthIdentity defines a user identity with access to a lore spec.
 type AuthIdentity = config.AuthIdentity
+
+// PasskeysConfig holds WebAuthn passkey configuration.
+type PasskeysConfig = config.PasskeysConfig
 
 // Configuration options re-exported for external consumers.
 var (
@@ -49,5 +52,6 @@ var (
 	WithTLS             = config.WithTLS
 	WithCAKeysFile      = config.WithCAKeysFile
 	WithHostCertFile    = config.WithHostCertFile
+	WithPasskeys        = config.WithPasskeys
 	LoadAuthConfig      = config.LoadAuthConfig
 )

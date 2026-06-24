@@ -10,7 +10,11 @@ AI coding agents — Claude, GPT, Cursor, Codex — are trained on bash. They ex
 
 But when they need your documentation, they're stuck with fragile MCP servers, RAG pipelines, or copy-pasting into context windows. These approaches are complex to set up, hard to debug, and add layers of abstraction between the agent and the content.
 
+Also, you may need to explore those docs, to see what the agent is up to, and you don't want your chat UI or terminal to be cluttered with long raw markdown files. Sometimes you don't want markdown, sometimes it might be better to view things as a dynamic html file. Hey, you might even want to be able to run doom in the browser. 
+
 ## The Solution
+
+The solution is filesystems everywhere.
 
 OpenLore gives agents the same interface they already know — **a bash shell over SSH** — but serving your docs instead of a real filesystem.
 
@@ -19,6 +23,12 @@ It's a single binary, zero-config, read-only SSH server backed by an in-memory b
 ```
 Agent → SSH → OpenLore → Your Docs
 ```
+
+## Use Cases
+- **Documentation access** — Serve your docs over SSH. Agents can `ssh -p 2222 docs.internal` and use `ls`, `cat`, `grep`, `find`, and more to explore.
+- **A Remote View Layer for Agent Artifacts** — Agents can upload files to their workspace, and OpenLore can serve those files back over SSH. This gives agents a secure way to share artifacts, logs, screenshots, and more with the user, without needing to build a custom file upload UI or use something like Tailscale. You can access the agent's workspace remotely from anywhere using Passkeys through the browser, and review docs, logs, and screenshots that the agent wants to share with you.
+- **A Remote View Layer for the Agent's Workspace** - Provide agents with a secure way to upload files, have it accessible remotely from anywhere, without having to use something like Tailscale. This means you can access your files securely using Passkeys through the browser and review docs remotely.
+- **Manage Multi-Agent Knowledge Sharing** — Each agent can have its own OpenLore server with different docs. Agents can share knowledge by connecting to each other's servers, pushing and pulling context notes, and building a shared knowledge base. Or all the agents can share a single server with different directories for each agent.
 
 ## Quick Start
 
@@ -182,6 +192,12 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 | `skills` | List available skill commands |
 | `exit` / `quit` | Close session |
 
+**Publishing**
+
+| Command | Description |
+|---------|-------------|
+| `publish` | Publish content from stdin to a docset (`echo "..." \| publish <docset> <path>`) |
+
 **Shell Syntax**
 
 | Feature | Example |
@@ -200,7 +216,7 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 
 ### What's NOT Supported (By Design)
 
-No `rm`, `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, `exec`, or anything that writes, spawns processes, or accesses the network. The filesystem is read-only and the shell is an interpreter, not a real bash process.
+No `rm`, `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, `exec`, or anything that spawns processes or accesses the network. The filesystem is read-only except for the `publish` command, which provides controlled writes to configured docsets. The shell is an interpreter, not a real bash process.
 
 ## Skills
 
@@ -211,6 +227,36 @@ Built-in skills:
 - `agents` — AGENTS.md snippet for agent configuration
 
 List all skills with the `skills` command. You can add custom skills by creating a `skills/` directory with a `skills.json` manifest.
+
+## Publishing
+
+Agents can publish content to writable docsets using the `publish` command:
+
+```bash
+# Publish from an interactive session
+echo "# API Notes" | publish backend api-notes.md
+
+# Publish remotely (non-interactive)
+echo "# Research" | ssh -p 2222 server publish backend research/findings.md
+
+# List writable docsets
+ssh -p 2222 server publish
+```
+
+Enable publishing by adding `publish_dir` to a docset in your `lore.json`:
+
+```json
+{
+  "docsets": {
+    "backend": {
+      "paths": ["/docs/backend"],
+      "publish_dir": "./published/backend"
+    }
+  }
+}
+```
+
+Published files are written to the `publish_dir` on disk. If the directory is within the served tree, files appear in the VFS immediately.
 
 ## CLI Commands
 
@@ -447,7 +493,7 @@ func main() {
 
 OpenLore is designed to be safe to expose on a network:
 
-- **Read-only** — no writes, no process execution, no network access from the shell
+- **Controlled writes** — the `publish` command is the only write path, restricted to docsets with `publish_dir` configured. No process execution, no network access from the shell
 - **In-memory bash** — commands are interpreted as pure Go functions, not executed via `os/exec`
 - **No shell injection** — command parsing is structural, not string interpolation
 - **File type filtering** — only serve files matching allowed patterns

@@ -67,7 +67,7 @@ func TestVariableExpansion(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("NAME", "alice")
 	var out bytes.Buffer
-	sh.ExecPipeline("echo $NAME", &out, &bytes.Buffer{})
+	sh.ExecPipeline("echo $NAME", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "alice" {
 		t.Errorf("$NAME: got %q", strings.TrimSpace(out.String()))
 	}
@@ -76,7 +76,7 @@ func TestVariableExpansion(t *testing.T) {
 func TestVariableAssignment(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	var out bytes.Buffer
-	sh.ExecPipeline("FOO=hello; echo $FOO", &out, &bytes.Buffer{})
+	sh.ExecPipeline("FOO=hello; echo $FOO", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "hello" {
 		t.Errorf("var assign: got %q", strings.TrimSpace(out.String()))
 	}
@@ -85,7 +85,7 @@ func TestVariableAssignment(t *testing.T) {
 func TestVariableDefault(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	var out bytes.Buffer
-	sh.ExecPipeline("echo ${UNSET:-default}", &out, &bytes.Buffer{})
+	sh.ExecPipeline("echo ${UNSET:-default}", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "default" {
 		t.Errorf("${:-default}: got %q", strings.TrimSpace(out.String()))
 	}
@@ -120,7 +120,7 @@ func TestDoubleQuoteExpansion(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("WHO", "world")
 	var out bytes.Buffer
-	sh.ExecPipeline(`echo "hello $WHO"`, &out, &bytes.Buffer{})
+	sh.ExecPipeline(`echo "hello $WHO"`, &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "hello world" {
 		t.Errorf("double quote expansion: got %q", strings.TrimSpace(out.String()))
 	}
@@ -130,7 +130,7 @@ func TestSingleQuoteNoExpansion(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("WHO", "world")
 	var out bytes.Buffer
-	sh.ExecPipeline("echo '$WHO'", &out, &bytes.Buffer{})
+	sh.ExecPipeline("echo '$WHO'", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "$WHO" {
 		t.Errorf("single quote: got %q", strings.TrimSpace(out.String()))
 	}
@@ -147,7 +147,7 @@ func TestPipeWithVariableExpansion(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("PAT", "alice")
 	var out bytes.Buffer
-	sh.ExecPipeline("cat /docs/data.csv | grep $PAT", &out, &bytes.Buffer{})
+	sh.ExecPipeline("cat /docs/data.csv | grep $PAT", &out, &bytes.Buffer{}, nil)
 	if !strings.Contains(out.String(), "alice") {
 		t.Errorf("pipe+var: got %q", out.String())
 	}
@@ -171,7 +171,7 @@ func TestVariableLengthExpansion(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("WORD", "hello")
 	var out bytes.Buffer
-	sh.ExecPipeline("echo ${#WORD}", &out, &bytes.Buffer{})
+	sh.ExecPipeline("echo ${#WORD}", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "5" {
 		t.Errorf("${#}: got %q", strings.TrimSpace(out.String()))
 	}
@@ -181,7 +181,7 @@ func TestVariableAlternate(t *testing.T) {
 	sh := bashfs.NewShell(testFS())
 	sh.SetEnv("SET", "yes")
 	var out bytes.Buffer
-	sh.ExecPipeline("echo ${SET:+was set}", &out, &bytes.Buffer{})
+	sh.ExecPipeline("echo ${SET:+was set}", &out, &bytes.Buffer{}, nil)
 	if strings.TrimSpace(out.String()) != "was set" {
 		t.Errorf("${:+}: got %q", strings.TrimSpace(out.String()))
 	}

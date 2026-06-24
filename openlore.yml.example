@@ -76,6 +76,23 @@ host_key_path: .ssh/openlore_ed25519
 # The certificate must correspond to the key at host_key_path.
 # host_cert_file: .ssh/openlore_ed25519-cert.pub
 
+# ── Passkeys / WebAuthn ───────────────────────────────
+#
+# Enable browser-based passkey authentication for human access
+# to documentation via the HTTP server. When enabled, users can
+# register passkeys from the SSH shell (`passkey` command) and
+# then browse docs at /lore/ in a web browser.
+#
+# passkeys:
+#   enabled: true
+#   rp_id: docs.example.com          # WebAuthn Relying Party ID (your domain)
+#   rp_name: "Acme Docs"             # Display name shown in browser passkey prompt
+#   rp_origins:                       # Allowed origins for WebAuthn ceremonies
+#     - "https://docs.example.com"
+#   lore_path: /lore                  # HTTP path prefix for browsing docs
+#   passkeys_file: ./config/passkeys.json  # Where credentials are stored
+#   session_ttl: 24h                  # How long browser sessions last
+
 # ── Content ───────────────────────────────────────────
 
 # Only serve files matching these glob patterns.
@@ -117,6 +134,36 @@ files:
 # Directory containing runtime skills (skills.json + markdown files).
 # Embedded skills in assets/skills/ are always loaded.
 # skills_dir: ./skills
+
+# ── Storage Substrate Hooks ───────────────────────────
+#
+# Hooks are external shell commands that run on storage events.
+# Three event kinds:
+#   on_startup  — fires once when the server boots
+#   pre_read    — fires before a virtual path is read (debounced per path)
+#   post_write  — fires after bytes hit disk
+#
+# Each hook receives these env vars:
+#   OPENLORE_DATA_DIR   server data root (from `data_dir` below)
+#   OPENLORE_PATH       virtual path the event refers to
+#   OPENLORE_AGENT      publishing agent ID (or empty)
+#   OPENLORE_PARTITION  partition slug (or empty)
+#   OPENLORE_EVENT      event kind
+#   OPENLORE_BYTES      byte count (post_write only)
+#
+# Errors are non-fatal by default — set `fail_on_error: true` to flip.
+#
+# data_dir: /var/lib/openlore
+# hooks:
+#   on_startup:
+#     - cmd: "/usr/local/bin/openlore-restore"
+#       timeout: 30s
+#   pre_read:
+#     - cmd: "/usr/local/bin/openlore-pull"
+#       debounce: 2s
+#   post_write:
+#     - cmd: "/usr/local/bin/openlore-version"
+#       fail_on_error: true
 
 # ── Display ───────────────────────────────────────────
 

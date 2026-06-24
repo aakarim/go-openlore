@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/internal/httpserver"
 	"github.com/aakarim/go-openlore/internal/metrics"
+	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
 	"github.com/aakarim/go-openlore/pkg/bashfs/cmds"
 	"github.com/aakarim/go-openlore/pkg/bashfs"
@@ -25,6 +27,10 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// SessionFSFn returns the filesystem to use for a given SSH session identity.
+// The default implementation returns the base FS unchanged.
+type SessionFSFn func(id Identity, base bashfs.FileSystem) bashfs.FileSystem
+
 // Server is the main OpenLore SSH server.
 type Server struct {
 	config   config.Config
@@ -34,11 +40,13 @@ type Server struct {
 	metrics  *metrics.Metrics
 	srv      *ssh.Server
 	httpSrv  *httpserver.Server
+	passkeys *passkeys.Passkeys
 	logger   *slog.Logger
 	motd     string
 
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
+	sessionFSFn  SessionFSFn
 }
 
 // NewServer creates a new OpenLore SSH server.
@@ -81,6 +89,13 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		if auth.DefaultCwd != "" {
 			s.config.DefaultCwd = auth.DefaultCwd
 		}
+
+		// Register writable docsets for the publish command
+		for name, ds := range auth.Docsets {
+			if ds.PublishDir != "" {
+				cmds.RegisterPublishTarget(name, ds.PublishDir, ds.MaxPublishSize)
+			}
+		}
 	}
 
 	// Set up root directory
@@ -119,6 +134,48 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 
 	s.fs = s.merge
 
+	// Set up passkeys if enabled
+	if cfg.Passkeys.Enabled {
+		pkFile := cfg.Passkeys.PasskeysFile
+		if pkFile == "" {
+			pkFile = "./config/passkeys.json"
+		}
+		rpName := cfg.Passkeys.RPName
+		if rpName == "" {
+			rpName = "OpenLore"
+		}
+		sessionTTL := 24 * time.Hour
+		if cfg.Passkeys.SessionTTL != "" {
+			if d, err := time.ParseDuration(cfg.Passkeys.SessionTTL); err == nil {
+				sessionTTL = d
+			}
+		}
+
+		// Read host key material for session signing
+		sessionKey := []byte("openlore-default-session-key")
+		if keyData, err := os.ReadFile(cfg.HostKeyPath); err == nil {
+			sessionKey = keyData
+		}
+
+		pk, err := passkeys.New(passkeys.Config{
+			Enabled:      true,
+			RPID:         cfg.Passkeys.RPID,
+			RPName:       rpName,
+			RPOrigins:    cfg.Passkeys.RPOrigins,
+			LorePath:     cfg.Passkeys.LorePath,
+			PasskeysFile: pkFile,
+			SessionTTL:   sessionTTL,
+		}, sessionKey, logger)
+		if err != nil {
+			return nil, fmt.Errorf("setting up passkeys: %w", err)
+		}
+		s.passkeys = pk
+
+		if s.auth != nil {
+			pk.SetAuthConfig(s.auth)
+		}
+	}
+
 	return s, nil
 }
 
@@ -140,6 +197,19 @@ func (s *Server) MountFS(name string, fsys fs.FS) {
 // SetRootFS sets the root filesystem using a standard fs.FS.
 func (s *Server) SetRootFS(fsys fs.FS) {
 	s.merge.SetRoot(NewFSAdapter(fsys))
+}
+
+// SetRootBashFS sets the root filesystem using a bashfs.FileSystem.
+// Paths that don't match any mount fall through to this filesystem.
+func (s *Server) SetRootBashFS(fsys bashfs.FileSystem) {
+	s.merge.SetRoot(fsys)
+}
+
+// SetSessionFSFn registers a per-session filesystem decorator. When set,
+// the server calls fn(identity, baseFS) for each new SSH session and uses
+// the returned filesystem for that session's shell.
+func (s *Server) SetSessionFSFn(fn SessionFSFn) {
+	s.sessionFSFn = fn
 }
 
 func (s *Server) advertisedSSHPort() int {
@@ -195,54 +265,45 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 		keyStr := string(gossh.MarshalAuthorizedKey(matchKey))
 		matched := false
 
-		// First: try matching by public key (works for both raw keys and
-		// the underlying key inside a certificate).
+		// First: try matching by public key.
 		for _, ident := range s.auth.Identities {
 			if ident.PublicKey == keyStr {
-				if spec, ok := s.auth.Lore[ident.Lore]; ok {
-					for _, pm := range spec.Paths {
-						id.PathAccess = append(id.PathAccess, pm)
-					}
-				}
+				id.IdentityName = ident.Name
 				id.LoreName = ident.Lore
+				id.PathAccess = s.resolveLorePathAccess(ident.Lore)
+				id.PublishDocsets = ident.Publish
 				matched = true
 				break
 			}
 		}
 
 		// Second: if the client used a certificate and no key matched,
-		// map certificate principals to lore spec names. This lets you
+		// map certificate principals to lore names. This lets you
 		// sign certs with `-n frontend` and have them automatically get
-		// the "frontend" lore spec without registering individual keys.
+		// the "frontend" lore without registering individual keys.
 		if !matched && cert != nil {
 			for _, principal := range cert.ValidPrincipals {
-				if spec, ok := s.auth.Lore[principal]; ok {
+				if _, ok := s.auth.Lore[principal]; ok {
 					id.LoreName = principal
-					for _, pm := range spec.Paths {
-						id.PathAccess = append(id.PathAccess, pm)
-					}
+					id.PathAccess = s.resolveLorePathAccess(principal)
 					matched = true
 					break
 				}
 			}
 		}
 
-		// Unrecognized key/cert: fall back to "default" lore spec
+		// Unrecognized key/cert: fall back to "default" lore
 		if !matched {
-			if spec, ok := s.auth.Lore["default"]; ok {
+			if _, ok := s.auth.Lore["default"]; ok {
 				id.LoreName = "default"
-				for _, pm := range spec.Paths {
-					id.PathAccess = append(id.PathAccess, pm)
-				}
+				id.PathAccess = s.resolveLorePathAccess("default")
 			}
 		}
 	} else if s.auth != nil {
 		// Keyless connection with auth config: use "default" lore
-		if spec, ok := s.auth.Lore["default"]; ok {
+		if _, ok := s.auth.Lore["default"]; ok {
 			id.LoreName = "default"
-			for _, pm := range spec.Paths {
-				id.PathAccess = append(id.PathAccess, pm)
-			}
+			id.PathAccess = s.resolveLorePathAccess("default")
 		}
 	} else {
 		// No auth config at all: full access
@@ -255,6 +316,27 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 	}
 
 	return id
+}
+
+// resolveLorePathAccess resolves a lore name to path mappings by looking up
+// its docset list and collecting all paths from each referenced docset.
+func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
+	if s.auth == nil {
+		return nil
+	}
+	docsetNames, ok := s.auth.Lore[loreName]
+	if !ok {
+		return nil
+	}
+	var mappings []config.PathMapping
+	for _, dsName := range docsetNames {
+		if ds, ok := s.auth.Docsets[dsName]; ok {
+			for _, pm := range ds.Paths {
+				mappings = append(mappings, pm)
+			}
+		}
+	}
+	return mappings
 }
 
 func (s *Server) sftpSubsystem(sess ssh.Session) {
@@ -305,16 +387,55 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 			}
 		}()
 
-		shell := bashfs.NewShell(s.fs)
+		// Build per-session filesystem filtered by lore
+		sessionFS := bashfs.FileSystem(s.merge)
+		if id.LoreName != "" && s.auth != nil {
+			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
+				allowed := make(map[string]bool)
+				for _, ds := range docsetNames {
+					allowed[ds] = true
+				}
+				sessionFS = s.merge.FilteredView(allowed)
+			}
+		}
+		if s.sessionFSFn != nil {
+			sessionFS = s.sessionFSFn(id, sessionFS)
+		}
+
+		shell := bashfs.NewShell(sessionFS)
 		if s.config.DefaultCwd != "" {
 			shell.SetCwd(s.config.DefaultCwd)
+		}
+
+		// Set identity info as environment variables
+		if id.IdentityName != "" {
+			shell.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
+		}
+		// Expose the SSH user as the agent ID so commands like `kb` and
+		// the writable VFS can scope operations per-agent.
+		if id.User != "" {
+			shell.SetEnv("OPENLORE_USER", id.User)
+			shell.SetEnv("OPENLORE_AGENT_ID", id.User)
+		}
+		if id.LoreName != "" {
+			shell.SetEnv("OPENLORE_LORE", id.LoreName)
+			// Set writable docsets for publish scoping
+			if len(id.PublishDocsets) > 0 {
+				// Identity has explicit publish scope
+				shell.SetEnv("OPENLORE_DOCSETS", strings.Join(id.PublishDocsets, ","))
+			} else if s.auth != nil {
+				// Fall back to all docsets in lore
+				if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
+					shell.SetEnv("OPENLORE_DOCSETS", strings.Join(docsetNames, ","))
+				}
+			}
 		}
 
 		cmd := sess.Command()
 		if len(cmd) > 0 {
 			cmdLine := joinCommand(cmd)
 			s.metrics.TotalCommands.Add(1)
-			exitCode := shell.ExecPipeline(cmdLine, sess, sess.Stderr())
+			exitCode := shell.ExecPipeline(cmdLine, sess, sess.Stderr(), sess)
 			sess.Exit(exitCode)
 			return
 		}
@@ -354,9 +475,14 @@ func (s *Server) ListenAndServe() error {
 
 	if s.config.AllowKeyless {
 		opts = append(opts, ssh.EmulatePty())
-	}
-
-	if !s.config.AllowKeyless {
+		// Truly keyless: we don't set PublicKeyHandler so gliderlabs/ssh
+		// flips NoClientAuth=true (see gliderlabs/ssh/server.go:
+		// "if PasswordHandler==nil && PublicKeyHandler==nil && ..."). This
+		// lets clients without any SSH key (fresh containers, CI runners,
+		// people running `ssh` from a brand-new VM) connect anonymously.
+		// Clients that *do* have keys still connect fine — they just end up
+		// authenticating with the `none` method instead of `publickey`.
+	} else {
 		opts = append(opts, ssh.PublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
 			if s.config.UnknownIdentity == "deny" && s.auth != nil {
 				// Extract underlying key from certificates
@@ -374,7 +500,7 @@ func (s *Server) ListenAndServe() error {
 					}
 				}
 
-				// Allow cert-authenticated users whose principal matches a lore spec
+				// Allow cert-authenticated users whose principal matches a lore name
 				if cert != nil {
 					for _, principal := range cert.ValidPrincipals {
 						if _, ok := s.auth.Lore[principal]; ok {
@@ -436,14 +562,53 @@ func (s *Server) ListenAndServe() error {
 	if s.config.HTTPPort > 0 {
 		webFS := assets.Web()
 		if webFS != nil {
-			httpSrv := httpserver.New(webFS, httpserver.Config{
+			httpCfg := httpserver.Config{
 				Port:        s.config.HTTPPort,
 				TLSCert:     s.config.TLSCert,
 				TLSKey:      s.config.TLSKey,
 				HostKeyPath: s.config.HostKeyPath,
 				SSHPort:     s.advertisedSSHPort(),
 				Logger:      s.logger,
-			})
+			}
+
+			if s.passkeys != nil {
+				// Build the HTTP base URL for the passkey shell command.
+				// If rp_origins are configured, use the first one as the base URL
+				// (handles TLS termination at a load balancer).
+				var baseURL string
+				if len(s.config.Passkeys.RPOrigins) > 0 {
+					baseURL = strings.TrimRight(s.config.Passkeys.RPOrigins[0], "/")
+				} else {
+					scheme := "http"
+					if s.config.TLSCert != "" {
+						scheme = "https"
+					}
+					baseURL = fmt.Sprintf("%s://localhost:%d", scheme, s.config.HTTPPort)
+					if s.config.Passkeys.RPID != "" && s.config.Passkeys.RPID != "localhost" {
+						baseURL = fmt.Sprintf("%s://%s", scheme, s.config.Passkeys.RPID)
+						if (scheme == "http" && s.config.HTTPPort != 80) || (scheme == "https" && s.config.HTTPPort != 443) {
+							baseURL = fmt.Sprintf("%s:%d", baseURL, s.config.HTTPPort)
+						}
+					}
+				}
+
+				passkeys.RegisterShellCommand(s.passkeys, baseURL)
+
+				httpCfg.Extenders = append(httpCfg.Extenders, s.passkeys)
+
+				lorePath := s.config.Passkeys.LorePath
+				if lorePath == "" {
+					lorePath = "/lore"
+				}
+				lorePath = "/" + strings.Trim(lorePath, "/")
+				httpCfg.ExtraHandlers = map[string]http.Handler{
+					lorePath + "/": s.passkeys.LoreBrowserHandler(s.fs),
+				}
+
+				cmds.PublishBaseURL = baseURL + lorePath
+			}
+
+			httpSrv := httpserver.New(webFS, httpCfg)
 			httpSrv.Start()
 			s.httpSrv = httpSrv
 		}
@@ -455,6 +620,9 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.passkeys != nil {
+		s.passkeys.Shutdown()
+	}
 	if s.srv == nil {
 		return nil
 	}

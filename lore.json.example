@@ -2,8 +2,8 @@
   "allow_keyless": true,
   "unknown_identity": "allow",
   "default_cwd": "/docs",
-  "lore": {
-    "default": {
+  "docsets": {
+    "public": {
       "paths": [
         "/docs/public",
         "/docs/getting-started.md"
@@ -22,7 +22,9 @@
         "/docs/api",
         {"internal/db-schema": "/docs/database"},
         "/docs/shared"
-      ]
+      ],
+      "publish_dir": "./published/backend",
+      "max_publish_size": 5000000
     },
     "ops": {
       "paths": [
@@ -30,10 +32,14 @@
         {"internal/runbooks/on-call.md": "/docs/runbooks/on-call.md"},
         "/docs/deployment"
       ]
-    },
-    "full-access": {
-      "paths": ["/"]
     }
+  },
+  "lore": {
+    "default": ["public"],
+    "frontend": ["public", "frontend"],
+    "backend": ["public", "backend"],
+    "ops": ["public", "ops"],
+    "full-access": ["public", "frontend", "backend", "ops"]
   },
   "identities": [
     {
