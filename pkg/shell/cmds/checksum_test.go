@@ -8,7 +8,9 @@ import (
 func TestMd5sum(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "md5sum /docs/checksum.txt")
 	parts := strings.Fields(out)
-	if len(parts) < 2 || len(parts[0]) != 32 { t.Errorf("md5sum: got %q", out) }
+	if len(parts) < 2 || len(parts[0]) != 32 {
+		t.Errorf("md5sum: got %q", out)
+	}
 }
 
 func TestSha256sum(t *testing.T) {

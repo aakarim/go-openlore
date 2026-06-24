@@ -7,7 +7,9 @@ import (
 
 func TestEchoN(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "echo -n hello")
-	if out != "hello" { t.Errorf("echo -n: got %q", out) }
+	if out != "hello" {
+		t.Errorf("echo -n: got %q", out)
+	}
 }
 
 func TestEchoEscapes(t *testing.T) {

@@ -19,13 +19,13 @@ type MuxExtender interface {
 
 // Config holds HTTP server configuration.
 type Config struct {
-	Port        int
-	TLSCert     string
-	TLSKey      string
-	HostKeyPath string
-	SSHPort     int
-	Logger      *slog.Logger
-	Extenders   []MuxExtender
+	Port          int
+	TLSCert       string
+	TLSKey        string
+	HostKeyPath   string
+	SSHPort       int
+	Logger        *slog.Logger
+	Extenders     []MuxExtender
 	ExtraHandlers map[string]http.Handler
 }
 

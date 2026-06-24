@@ -10,27 +10,37 @@ import (
 
 func TestJqField(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "jq -r .name /docs/data.json")
-	if strings.TrimSpace(out) != "alice" { t.Errorf("jq: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "alice" {
+		t.Errorf("jq: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestJqPipe(t *testing.T) {
 	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("jq '.items | length' /docs/data.json", &out, &errOut, nil)
-	if strings.TrimSpace(out.String()) != "3" { t.Errorf("jq pipe: got %q", out.String()) }
+	if strings.TrimSpace(out.String()) != "3" {
+		t.Errorf("jq pipe: got %q", out.String())
+	}
 }
 
 func TestJqSelect(t *testing.T) {
 	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("jq '.[] | select(.active)' /docs/users.json", &out, &errOut, nil)
-	if !strings.Contains(out.String(), "alice") { t.Errorf("jq select: got %q", out.String()) }
-	if strings.Contains(out.String(), "bob") { t.Error("jq select should filter bob") }
+	if !strings.Contains(out.String(), "alice") {
+		t.Errorf("jq select: got %q", out.String())
+	}
+	if strings.Contains(out.String(), "bob") {
+		t.Error("jq select should filter bob")
+	}
 }
 
 func TestJqMap(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "jq 'map(.name)' /docs/users.json")
-	if !strings.Contains(out, "alice") { t.Errorf("jq map: got %q", out) }
+	if !strings.Contains(out, "alice") {
+		t.Errorf("jq map: got %q", out)
+	}
 }
 
 func TestJqObjectConstruct(t *testing.T) {

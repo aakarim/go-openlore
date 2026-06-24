@@ -8,24 +8,24 @@ import (
 	"time"
 
 	"github.com/aakarim/go-openlore/pkg/shell"
-	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // mapFS is an in-memory filesystem for testing.
 type mapFS struct {
-	Files map[string]*cmds.FileInfo
+	Files map[string]*vfs.FileInfo
 	Dirs  map[string][]string
 }
 
 func newMapFS() *mapFS {
 	return &mapFS{
-		Files: make(map[string]*cmds.FileInfo),
+		Files: make(map[string]*vfs.FileInfo),
 		Dirs:  make(map[string][]string),
 	}
 }
 
 func (m *mapFS) AddFile(path string, content string) {
-	fi := &cmds.FileInfo{
+	fi := &vfs.FileInfo{
 		FileName:    baseName(path),
 		FilePath:    path,
 		Content:     []byte(content),
@@ -37,7 +37,7 @@ func (m *mapFS) AddFile(path string, content string) {
 	dir := dirName(path)
 	for dir != "" && dir != "/" {
 		if _, ok := m.Files[dir]; !ok {
-			m.Files[dir] = &cmds.FileInfo{
+			m.Files[dir] = &vfs.FileInfo{
 				FileName: baseName(dir), FilePath: dir, Dir: true,
 				FileModTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
 			}
@@ -47,7 +47,7 @@ func (m *mapFS) AddFile(path string, content string) {
 		dir = parent
 	}
 	if _, ok := m.Files["/"]; !ok {
-		m.Files["/"] = &cmds.FileInfo{FileName: "/", FilePath: "/", Dir: true, FileModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
+		m.Files["/"] = &vfs.FileInfo{FileName: "/", FilePath: "/", Dir: true, FileModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
 	}
 	parent := dirName(path)
 	m.addChild(parent, baseName(path))
@@ -63,7 +63,7 @@ func (m *mapFS) addChild(dir, child string) {
 }
 
 func (m *mapFS) AddDir(path string) {
-	m.Files[path] = &cmds.FileInfo{
+	m.Files[path] = &vfs.FileInfo{
 		FileName: baseName(path), FilePath: path, Dir: true,
 		FileModTime: time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC),
 	}
@@ -73,8 +73,8 @@ func (m *mapFS) AddDir(path string) {
 	}
 }
 
-func (m *mapFS) Stat(path string) (*cmds.FileInfo, error) {
-	path = cmds.CleanPath(path)
+func (m *mapFS) Stat(path string) (*vfs.FileInfo, error) {
+	path = vfs.CleanPath(path)
 	fi, ok := m.Files[path]
 	if !ok {
 		return nil, fmt.Errorf("not found: %s", path)
@@ -82,8 +82,8 @@ func (m *mapFS) Stat(path string) (*cmds.FileInfo, error) {
 	return fi, nil
 }
 
-func (m *mapFS) ReadDir(path string) ([]cmds.FileInfo, error) {
-	path = cmds.CleanPath(path)
+func (m *mapFS) ReadDir(path string) ([]vfs.FileInfo, error) {
+	path = vfs.CleanPath(path)
 	fi, ok := m.Files[path]
 	if !ok {
 		return nil, fmt.Errorf("not found: %s", path)
@@ -92,7 +92,7 @@ func (m *mapFS) ReadDir(path string) ([]cmds.FileInfo, error) {
 		return nil, fmt.Errorf("not a directory: %s", path)
 	}
 	children := m.Dirs[path]
-	var result []cmds.FileInfo
+	var result []vfs.FileInfo
 	for _, name := range children {
 		childPath := path + "/" + name
 		if path == "/" {
@@ -106,7 +106,7 @@ func (m *mapFS) ReadDir(path string) ([]cmds.FileInfo, error) {
 }
 
 func (m *mapFS) ReadFile(path string) ([]byte, error) {
-	path = cmds.CleanPath(path)
+	path = vfs.CleanPath(path)
 	fi, ok := m.Files[path]
 	if !ok {
 		return nil, fmt.Errorf("not found: %s", path)

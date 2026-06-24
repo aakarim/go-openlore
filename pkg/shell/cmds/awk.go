@@ -69,10 +69,10 @@ type awkInterpreter struct {
 }
 
 type awkRule struct {
-	pattern  string // "BEGIN", "END", regex, expression, or empty (match all)
-	action   string
-	isBegin  bool
-	isEnd    bool
+	pattern string // "BEGIN", "END", regex, expression, or empty (match all)
+	action  string
+	isBegin bool
+	isEnd   bool
 }
 
 func newAwkInterpreter(program, fieldSep string, varDefs []string, w io.Writer, errW io.Writer) *awkInterpreter {
@@ -1324,4 +1324,3 @@ func (a *awkInterpreter) execFor(stmt string) {
 		}
 	}
 }
-

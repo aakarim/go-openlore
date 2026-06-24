@@ -5,6 +5,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 func CmdGrep(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
@@ -157,7 +159,7 @@ func CmdGrep(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 				fmt.Fprintf(errW, "grep: %s: Is a directory\n", target)
 				continue
 			}
-			WalkDir(ctx.FS(), p, func(walkPath string, info *FileInfo, err error) error {
+			vfs.WalkDir(ctx.FS(), p, func(walkPath string, info *vfs.FileInfo, err error) error {
 				if err != nil || info.Dir {
 					return nil
 				}

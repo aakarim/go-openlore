@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 func CmdDu(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
@@ -38,7 +40,7 @@ func CmdDu(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.
 	for _, target := range targets {
 		p := ctx.Resolve(target)
 		var size int64
-		WalkDir(ctx.FS(), p, func(walkPath string, info *FileInfo, err error) error {
+		vfs.WalkDir(ctx.FS(), p, func(walkPath string, info *vfs.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}

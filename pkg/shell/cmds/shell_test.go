@@ -11,12 +11,16 @@ import (
 
 func TestSplitArgs(t *testing.T) {
 	got := shell.SplitArgs(`echo "hello world"`)
-	if len(got) != 2 || got[1] != "hello world" { t.Errorf("SplitArgs: got %v", got) }
+	if len(got) != 2 || got[1] != "hello world" {
+		t.Errorf("SplitArgs: got %v", got)
+	}
 }
 
 func TestComplexPipe(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "cat /docs/notes.txt | sort | uniq -c | sort -rn")
-	if len(strings.TrimSpace(out)) == 0 { t.Error("complex pipe should produce output") }
+	if len(strings.TrimSpace(out)) == 0 {
+		t.Error("complex pipe should produce output")
+	}
 }
 
 func TestPipeInsideQuotes(t *testing.T) {
@@ -37,25 +41,33 @@ func TestSemicolon(t *testing.T) {
 func TestAndOperator(t *testing.T) {
 	// true && echo yes → should print yes
 	out, _, _ := execCmd(t, testFS(), "true && echo yes")
-	if strings.TrimSpace(out) != "yes" { t.Errorf("&&: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "yes" {
+		t.Errorf("&&: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestAndOperatorShortCircuit(t *testing.T) {
 	// false && echo no → should NOT print
 	out, _, _ := execCmd(t, testFS(), "false && echo no")
-	if strings.TrimSpace(out) != "" { t.Errorf("&& short-circuit: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("&& short-circuit: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestOrOperator(t *testing.T) {
 	// false || echo fallback → should print fallback
 	out, _, _ := execCmd(t, testFS(), "false || echo fallback")
-	if strings.TrimSpace(out) != "fallback" { t.Errorf("||: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "fallback" {
+		t.Errorf("||: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestOrOperatorShortCircuit(t *testing.T) {
 	// true || echo no → should NOT print
 	out, _, _ := execCmd(t, testFS(), "true || echo no")
-	if strings.TrimSpace(out) != "" { t.Errorf("|| short-circuit: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("|| short-circuit: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestNegation(t *testing.T) {
@@ -108,12 +120,16 @@ func TestForLoop(t *testing.T) {
 
 func TestIfThenElse(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "if true; then echo yes; else echo no; fi")
-	if strings.TrimSpace(out) != "yes" { t.Errorf("if: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "yes" {
+		t.Errorf("if: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestIfElse(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "if false; then echo yes; else echo no; fi")
-	if strings.TrimSpace(out) != "no" { t.Errorf("if else: got %q", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "no" {
+		t.Errorf("if else: got %q", strings.TrimSpace(out))
+	}
 }
 
 func TestDoubleQuoteExpansion(t *testing.T) {

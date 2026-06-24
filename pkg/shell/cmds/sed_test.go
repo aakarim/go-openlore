@@ -7,7 +7,9 @@ import (
 
 func TestSed(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "sed 's/apple/orange/' /docs/notes.txt")
-	if !strings.Contains(out, "orange") { t.Error("sed should replace apple with orange") }
+	if !strings.Contains(out, "orange") {
+		t.Error("sed should replace apple with orange")
+	}
 }
 
 func TestSedPipe(t *testing.T) {

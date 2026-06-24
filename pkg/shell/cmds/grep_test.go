@@ -8,7 +8,9 @@ import (
 func TestPipe(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "cat /docs/notes.txt | grep apple")
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 2 { t.Errorf("pipe: got %d lines, want 2", len(lines)) }
+	if len(lines) != 2 {
+		t.Errorf("pipe: got %d lines, want 2", len(lines))
+	}
 }
 
 func TestGrepLineNumbers(t *testing.T) {

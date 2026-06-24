@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
 )
 
 // --- jq ---
@@ -176,27 +175,27 @@ func jqPrintValue(w io.Writer, v interface{}, raw, compact bool) {
 type jqNodeType int
 
 const (
-	jqIdentity    jqNodeType = iota // .
-	jqField                         // .foo
-	jqIndex                         // .[0]
-	jqSlice                         // .[2:5]
-	jqIterator                      // .[]
-	jqPipe                          // a | b
-	jqComma                         // a, b
-	jqLiteral                       // "str", 123, true, false, null
-	jqArrayConstruct                // [expr]
-	jqObjectConstruct               // {key: expr}
-	jqFuncCall                      // length, keys, etc.
-	jqComparison                    // ==, !=, <, >, <=, >=
-	jqArith                         // +, -, *, /, %
-	jqAnd                           // and
-	jqOr                            // or
-	jqNot                           // not
-	jqIf                            // if-then-else-end
-	jqTryCatch                      // try-catch
-	jqRecurse                       // ..
-	jqOptional                      // .foo?
-	jqStringInterp                  // string interpolation
+	jqIdentity        jqNodeType = iota // .
+	jqField                             // .foo
+	jqIndex                             // .[0]
+	jqSlice                             // .[2:5]
+	jqIterator                          // .[]
+	jqPipe                              // a | b
+	jqComma                             // a, b
+	jqLiteral                           // "str", 123, true, false, null
+	jqArrayConstruct                    // [expr]
+	jqObjectConstruct                   // {key: expr}
+	jqFuncCall                          // length, keys, etc.
+	jqComparison                        // ==, !=, <, >, <=, >=
+	jqArith                             // +, -, *, /, %
+	jqAnd                               // and
+	jqOr                                // or
+	jqNot                               // not
+	jqIf                                // if-then-else-end
+	jqTryCatch                          // try-catch
+	jqRecurse                           // ..
+	jqOptional                          // .foo?
+	jqStringInterp                      // string interpolation
 )
 
 type jqNode struct {

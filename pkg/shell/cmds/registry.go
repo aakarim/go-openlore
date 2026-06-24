@@ -2,7 +2,6 @@ package cmds
 
 import (
 	"io"
-
 )
 
 // CmdFunc is the signature for all shell commands.

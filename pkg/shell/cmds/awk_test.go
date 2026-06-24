@@ -8,12 +8,16 @@ import (
 func TestAwkFieldSep(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "awk -F , '{print $1}' /docs/data.csv")
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if lines[0] != "name" { t.Errorf("awk -F,: got %q", lines[0]) }
+	if lines[0] != "name" {
+		t.Errorf("awk -F,: got %q", lines[0])
+	}
 }
 
 func TestAwkPipe(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "cat /docs/numbers.txt | awk '{sum += $1} END{print sum}'")
-	if strings.TrimSpace(out) != "66" { t.Errorf("awk sum: got %q, want 66", strings.TrimSpace(out)) }
+	if strings.TrimSpace(out) != "66" {
+		t.Errorf("awk sum: got %q, want 66", strings.TrimSpace(out))
+	}
 }
 
 func TestAwkRegexPattern(t *testing.T) {

@@ -12,10 +12,10 @@ import (
 
 // Config holds the resolved server configuration.
 type Config struct {
-	ConfigVersion string
-	Port         int
-	MetricsPort  int
-	HostKeyPath  string
+	ConfigVersion   string
+	Port            int
+	MetricsPort     int
+	HostKeyPath     string
 	AllowKeyless    bool
 	UnknownIdentity string // "allow" (default) or "deny"
 	DefaultCwd      string
@@ -28,10 +28,10 @@ type Config struct {
 	TLSKey          string
 	CAKeysFile      string
 	HostCertFile    string
-	Files        FilesConfig
-	Folders      []FolderConfig
-	Passkeys     PasskeysConfig
-	Logger       *slog.Logger
+	Files           FilesConfig
+	Folders         []FolderConfig
+	Passkeys        PasskeysConfig
+	Logger          *slog.Logger
 
 	// Track sources for conflict detection.
 	configFileLoaded   bool
@@ -64,12 +64,12 @@ type FolderConfig struct {
 
 // AuthConfig is loaded from lore.json.
 type AuthConfig struct {
-	AllowKeyless    *bool                  `json:"allow_keyless,omitempty"`
-	UnknownIdentity string                 `json:"unknown_identity,omitempty"`
-	DefaultCwd      string                 `json:"default_cwd,omitempty"`
-	Docsets         map[string]DocsetSpec  `json:"docsets"`
-	Lore            map[string][]string    `json:"lore"`
-	Identities      []AuthIdentity         `json:"identities"`
+	AllowKeyless    *bool                 `json:"allow_keyless,omitempty"`
+	UnknownIdentity string                `json:"unknown_identity,omitempty"`
+	DefaultCwd      string                `json:"default_cwd,omitempty"`
+	Docsets         map[string]DocsetSpec `json:"docsets"`
+	Lore            map[string][]string   `json:"lore"`
+	Identities      []AuthIdentity        `json:"identities"`
 }
 
 // DocsetSpec defines a named set of path mappings.
@@ -125,24 +125,24 @@ type Option func(*Config) error
 
 // fileConfig mirrors Config for YAML deserialization.
 type fileConfig struct {
-	ConfigVersion string         `yaml:"version"`
-	Port         int            `yaml:"port"`
-	MetricsPort  int            `yaml:"metrics_port"`
-	HostKeyPath  string         `yaml:"host_key_path"`
-	MOTD         string         `yaml:"motd"`
-	MOTDFile     string         `yaml:"motd_file"`
-	AuthFile     string         `yaml:"auth_file"`
-	SkillsDir    string         `yaml:"skills_dir"`
+	ConfigVersion   string         `yaml:"version"`
+	Port            int            `yaml:"port"`
+	MetricsPort     int            `yaml:"metrics_port"`
+	HostKeyPath     string         `yaml:"host_key_path"`
+	MOTD            string         `yaml:"motd"`
+	MOTDFile        string         `yaml:"motd_file"`
+	AuthFile        string         `yaml:"auth_file"`
+	SkillsDir       string         `yaml:"skills_dir"`
 	HTTPPort        int            `yaml:"http_port"`
 	ExternalSSHPort int            `yaml:"external_ssh_port"`
 	TLSCert         string         `yaml:"tls_cert"`
-	TLSKey       string         `yaml:"tls_key"`
-	CAKeysFile   string         `yaml:"ca_keys_file"`
-	HostCertFile string         `yaml:"host_cert_file"`
-	DefaultCwd   string         `yaml:"default_cwd"`
-	Files        *filesYAML     `yaml:"files"`
-	Folders      []FolderConfig `yaml:"folders"`
-	Passkeys     *passkeysYAML  `yaml:"passkeys"`
+	TLSKey          string         `yaml:"tls_key"`
+	CAKeysFile      string         `yaml:"ca_keys_file"`
+	HostCertFile    string         `yaml:"host_cert_file"`
+	DefaultCwd      string         `yaml:"default_cwd"`
+	Files           *filesYAML     `yaml:"files"`
+	Folders         []FolderConfig `yaml:"folders"`
+	Passkeys        *passkeysYAML  `yaml:"passkeys"`
 }
 
 type passkeysYAML struct {
@@ -165,10 +165,10 @@ type filesYAML struct {
 // Returns an error if both a config file and embedded config are used.
 func New(opts ...Option) (Config, error) {
 	cfg := Config{
-		Port:         2222,
-		HTTPPort:     8080,
-		MetricsPort:  3000,
-		HostKeyPath:  ".ssh/openlore_ed25519",
+		Port:            2222,
+		HTTPPort:        8080,
+		MetricsPort:     3000,
+		HostKeyPath:     ".ssh/openlore_ed25519",
 		AllowKeyless:    true,
 		UnknownIdentity: "allow",
 		DefaultCwd:      "/openlore",
@@ -364,8 +364,8 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			applyPasskeysConfig(cfg, fc.Passkeys)
 		}
 
-			// MOTD fallback: only set if nothing else has set it yet
-			if cfg.MOTD == "" && motdFallback != "" {
+		// MOTD fallback: only set if nothing else has set it yet
+		if cfg.MOTD == "" && motdFallback != "" {
 			cfg.MOTD = motdFallback
 		}
 

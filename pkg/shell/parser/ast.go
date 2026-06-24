@@ -183,14 +183,14 @@ type Expansion struct {
 type ParamExpOp int
 
 const (
-	DefaultUnset        ParamExpOp = iota // ${VAR-word}
-	DefaultUnsetOrNull                    // ${VAR:-word}
-	AlternateUnset                        // ${VAR+word}
-	AlternateUnsetOrNull                  // ${VAR:+word}
-	AssignUnset                           // ${VAR=word}
-	AssignUnsetOrNull                     // ${VAR:=word}
-	ErrorUnset                            // ${VAR?word}
-	ErrorUnsetOrNull                      // ${VAR:?word}
+	DefaultUnset         ParamExpOp = iota // ${VAR-word}
+	DefaultUnsetOrNull                     // ${VAR:-word}
+	AlternateUnset                         // ${VAR+word}
+	AlternateUnsetOrNull                   // ${VAR:+word}
+	AssignUnset                            // ${VAR=word}
+	AssignUnsetOrNull                      // ${VAR:=word}
+	ErrorUnset                             // ${VAR?word}
+	ErrorUnsetOrNull                       // ${VAR:?word}
 )
 
 // CmdSubst represents command substitution $(...).

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // ReadInputLines reads lines from files or stdin, used by many text commands.
@@ -41,7 +43,7 @@ func ReadInputLines(ctx CmdContext, files []string, stdin io.Reader, errW io.Wri
 }
 
 // PrintLong prints a file in long format (used by ls -l).
-func PrintLong(w io.Writer, f *FileInfo) {
+func PrintLong(w io.Writer, f *vfs.FileInfo) {
 	mode := "-r--r--r--"
 	if f.Dir {
 		mode = "dr-xr-xr-x"

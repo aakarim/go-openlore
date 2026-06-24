@@ -12,7 +12,9 @@ func TestExport(t *testing.T) {
 	sh := shell.NewShell(testFS())
 	var out, errOut bytes.Buffer
 	sh.Exec("export FOO=bar", &out, &errOut, nil)
-	if sh.GetEnv("FOO") != "bar" { t.Errorf("export: got %q", sh.GetEnv("FOO")) }
+	if sh.GetEnv("FOO") != "bar" {
+		t.Errorf("export: got %q", sh.GetEnv("FOO"))
+	}
 }
 
 func TestUnset(t *testing.T) {

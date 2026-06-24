@@ -8,7 +8,9 @@ import (
 func TestUniq(t *testing.T) {
 	out, _, _ := execCmd(t, testFS(), "sort /docs/notes.txt | uniq")
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 4 { t.Errorf("uniq: got %d lines, want 4", len(lines)) }
+	if len(lines) != 4 {
+		t.Errorf("uniq: got %d lines, want 4", len(lines))
+	}
 }
 
 func TestUniqCount(t *testing.T) {

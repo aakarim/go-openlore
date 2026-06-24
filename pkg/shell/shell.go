@@ -11,17 +11,18 @@ import (
 
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/shell/parser"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// Shell is a restricted bash-like shell that operates over any FileSystem.
+// Shell is a restricted bash-like shell that operates over any vfs.FileSystem.
 type Shell struct {
-	fs  FileSystem
+	fs  vfs.FileSystem
 	cwd string
 	env map[string]string
 }
 
-// NewShell creates a new Shell backed by the given FileSystem.
-func NewShell(fs FileSystem) *Shell {
+// NewShell creates a new Shell backed by the given vfs.FileSystem.
+func NewShell(fs vfs.FileSystem) *Shell {
 	return &Shell{
 		fs:  fs,
 		cwd: "/",
@@ -30,9 +31,9 @@ func NewShell(fs FileSystem) *Shell {
 
 // --- CmdContext interface implementation ---
 
-func (s *Shell) FS() FileSystem    { return s.fs }
-func (s *Shell) Cwd() string       { return s.cwd }
-func (s *Shell) SetCwd(dir string) { s.cwd = dir }
+func (s *Shell) FS() vfs.FileSystem { return s.fs }
+func (s *Shell) Cwd() string        { return s.cwd }
+func (s *Shell) SetCwd(dir string)  { s.cwd = dir }
 func (s *Shell) Resolve(p string) string {
 	if strings.HasPrefix(p, "/") {
 		return path.Clean(p)

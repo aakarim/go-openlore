@@ -7,17 +7,17 @@ import (
 	"sort"
 	"time"
 
-	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 	"github.com/pkg/sftp"
 )
 
-// SFTPHandler implements the SFTP server interfaces using a shell.FileSystem.
+// SFTPHandler implements the SFTP server interfaces using a vfs.FileSystem.
 type SFTPHandler struct {
-	fs shell.FileSystem
+	fs vfs.FileSystem
 }
 
 // NewSFTPHandler creates a new SFTP handler backed by the given filesystem.
-func NewSFTPHandler(fs shell.FileSystem) *SFTPHandler {
+func NewSFTPHandler(fs vfs.FileSystem) *SFTPHandler {
 	return &SFTPHandler{fs: fs}
 }
 
@@ -75,9 +75,9 @@ func (h *SFTPHandler) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	}
 }
 
-// sftpFileInfo wraps shell.FileInfo to implement os.FileInfo.
+// sftpFileInfo wraps vfs.FileInfo to implement os.FileInfo.
 type sftpFileInfo struct {
-	info shell.FileInfo
+	info vfs.FileInfo
 }
 
 func (f sftpFileInfo) Name() string      { return f.info.FileName }

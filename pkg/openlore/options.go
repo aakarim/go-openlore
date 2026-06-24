@@ -2,11 +2,11 @@ package openlore
 
 import (
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // FileSystem is the read-only filesystem interface used by OpenLore.
-type FileSystem = shell.FileSystem
+type FileSystem = vfs.FileSystem
 
 // Option is a functional option for configuring the server.
 type Option = config.Option

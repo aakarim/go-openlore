@@ -5,6 +5,8 @@ import (
 	"io"
 	"path"
 	"strings"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 func CmdFind(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
@@ -31,7 +33,7 @@ func CmdFind(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 		}
 	}
 
-	err := WalkDir(ctx.FS(), root, func(p string, info *FileInfo, err error) error {
+	err := vfs.WalkDir(ctx.FS(), root, func(p string, info *vfs.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
