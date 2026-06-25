@@ -87,6 +87,8 @@ func init() {
 	Register("help", CmdHelp)
 	Register("skills", CmdSkills)
 	Register("version", CmdVersion)
+	// writes
+	Register("patch", CmdPatch)
 	// publishing
 	Register("publish", CmdPublish)
 	// identity

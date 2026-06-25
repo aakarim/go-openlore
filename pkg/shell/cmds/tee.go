@@ -1,23 +1,44 @@
 package cmds
 
 import (
-	"fmt"
 	"io"
 	"strings"
 )
 
+// CmdTee reads stdin fully, writes it to stdout, and commits it to each file
+// argument as a single atomic whole-object write (no streaming). `-a` appends.
+// On a read-only filesystem the file writes fail with a clear error, but the
+// pass-through to stdout still happens (so `tee` in a read-only pipe is inert
+// for files but transparent for data).
 func CmdTee(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
-	if stdin == nil {
-		return 0
-	}
-	// In read-only filesystem, just pass through stdin to stdout
-	// File arguments are ignored with a warning
+	appendMode := false
+	var files []string
 	for _, a := range args {
-		if a != "-a" && !strings.HasPrefix(a, "-") {
-			fmt.Fprintf(errW, "tee: %s: read-only filesystem, file output ignored\n", a)
+		switch {
+		case a == "-a" || a == "--append":
+			appendMode = true
+		case a == "-i" || a == "--ignore-interrupts":
+			// accepted, no-op
+		case strings.HasPrefix(a, "-") && a != "-":
+			// ignore other flags
+		default:
+			files = append(files, a)
 		}
 	}
-	data, _ := io.ReadAll(stdin)
+
+	var data []byte
+	if stdin != nil {
+		data, _ = io.ReadAll(stdin)
+	}
+
+	// Pass-through to stdout first (transparent data flow).
 	w.Write(data)
-	return 0
+
+	code := 0
+	for _, f := range files {
+		if c := WriteFileMsg(ctx, errW, "tee", f, data, appendMode); c != 0 {
+			code = c
+		}
+	}
+	return code
 }

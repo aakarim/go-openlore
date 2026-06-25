@@ -24,6 +24,8 @@ const (
 	tokDblRBracket // ]]
 	tokHeredoc     // <<DELIM heredoc opener
 	tokRedirMerge  // 2>&1 stderr→stdout merge
+	tokRedirOut    // > stdout overwrite redirection
+	tokRedirAppend // >> stdout append redirection
 	tokWord        // everything else
 )
 
@@ -212,6 +214,19 @@ func (l *lexer) next() token {
 			return token{kind: tokDblRBracket}
 		}
 		return l.scanWord()
+
+	case '>':
+		// `>&2`-style fd redirections are not supported as operators; keep
+		// them inside a word so they surface clearly rather than splitting.
+		if l.peekAt(1) == '&' {
+			return l.scanWord()
+		}
+		l.advance()
+		if l.pos < len(l.src) && l.peek() == '>' {
+			l.advance()
+			return token{kind: tokRedirAppend}
+		}
+		return token{kind: tokRedirOut}
 
 	default:
 		return l.scanWord()

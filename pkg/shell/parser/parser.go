@@ -469,10 +469,26 @@ func parseSimpleCommand(t *tokenizer) (Command, error) {
 		case tokRedirMerge:
 			t.next()
 			call.MergeStderr = true
+		case tokRedirOut, tokRedirAppend:
+			appendMode := tok.kind == tokRedirAppend
+			t.next()
+			tgt := t.peek()
+			if tgt.kind != tokWord {
+				return nil, fmt.Errorf("syntax error: expected filename after %s", redirOpString(appendMode))
+			}
+			t.next()
+			call.Redirect = &Redirect{Target: parseWordString(tgt.val), Append: appendMode}
 		default:
 			return finalizeCall(call), nil
 		}
 	}
+}
+
+func redirOpString(appendMode bool) string {
+	if appendMode {
+		return "`>>`"
+	}
+	return "`>`"
 }
 
 func finalizeCall(call *CallExpr) Command {

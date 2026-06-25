@@ -1,6 +1,7 @@
 package cmds
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 
 func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	quiet := false
+	inPlace := false
 	var expressions []string
 	var files []string
 
@@ -17,6 +19,8 @@ func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io
 		switch args[i] {
 		case "-n":
 			quiet = true
+		case "-i", "--in-place":
+			inPlace = true
 		case "-e":
 			if i+1 < len(args) {
 				expressions = append(expressions, args[i+1])
@@ -38,11 +42,41 @@ func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io
 
 	cmds := parseSedCommands(expressions)
 
+	// In-place: process each file separately, buffering the full transformed
+	// output and committing it as one atomic write (no in-place streaming).
+	if inPlace {
+		if len(files) == 0 {
+			fmt.Fprintln(errW, "sed: -i requires a file argument")
+			return 1
+		}
+		code := 0
+		for _, f := range files {
+			lines, c := ReadInputLines(ctx, []string{f}, nil, errW, "sed")
+			if c != 0 {
+				code = c
+				continue
+			}
+			var buf bytes.Buffer
+			applySedCommands(cmds, lines, quiet, &buf)
+			if c := WriteFileMsg(ctx, errW, "sed", f, buf.Bytes(), false); c != 0 {
+				code = c
+			}
+		}
+		return code
+	}
+
 	lines, code := ReadInputLines(ctx, files, stdin, errW, "sed")
 	if code != 0 {
 		return code
 	}
 
+	applySedCommands(cmds, lines, quiet, w)
+	return 0
+}
+
+// applySedCommands runs the parsed sed commands over lines, writing the result
+// to w. It is shared by streaming and in-place (`-i`) modes.
+func applySedCommands(cmds []sedCmd, lines []string, quiet bool, w io.Writer) {
 	totalLines := len(lines)
 	for lineNum, line := range lines {
 		deleted := false
@@ -97,7 +131,6 @@ func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io
 		}
 		_ = printed
 	}
-	return 0
 }
 
 type sedCmd struct {

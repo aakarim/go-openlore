@@ -176,6 +176,22 @@ func (s *Shell) execCmd(cmd parser.Command, w io.Writer, errW io.Writer, stdin i
 }
 
 func (s *Shell) execCall(call *parser.CallExpr, w io.Writer, errW io.Writer, stdin io.Reader) int {
+	// A `> file` / `>> file` redirection buffers the command's stdout and
+	// commits it as a single atomic whole-object write. Nothing is committed
+	// unless the command succeeds (commit-on-success only — no half-files).
+	if call.Redirect != nil {
+		var buf bytes.Buffer
+		code := s.execCallInner(call, &buf, errW, stdin)
+		if code != 0 {
+			return code
+		}
+		target := s.expandWord(call.Redirect.Target)
+		return cmds.WriteFileMsg(s, errW, "redirect", target, buf.Bytes(), call.Redirect.Append)
+	}
+	return s.execCallInner(call, w, errW, stdin)
+}
+
+func (s *Shell) execCallInner(call *parser.CallExpr, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	if len(call.Args) == 0 {
 		for _, assign := range call.Assigns {
 			s.SetEnv(assign.Name.Value, s.expandWord(assign.Value))
