@@ -11,72 +11,268 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// DirFS serves files from a real directory on disk.
+// DirFS serves files from a real directory on disk. It is the reference
+// vfs.WritableFS implementation.
 //
-// DirFS is read-only by default. Call WithBus(...) to obtain a copy that
-// supports WriteFile and emits a KindPostWrite event on each successful
-// write. (P1-06.)
+// Write capability is a stateful flag (the substrate-wide readonly lock). A
+// freshly constructed DirFS is read-only; call SetWriteable to enable writes.
+// WriteFileAtomic commits whole objects via temp-file + fsync + rename(2)
+// (POSIX atomic swap), and emits a KindPostWrite event when a bus is set
+// (see WithBus).
 type DirFS struct {
 	root  string
 	files config.FilesConfig
-	bus   *eventbus.Bus // optional; nil means writes are rejected
+	bus   *eventbus.Bus // optional; nil means no post_write fanout
+
+	// docsetRoots are the logical paths (relative to this DirFS root) that are
+	// docset boundaries for Mkdir: a folder may only be created strictly below
+	// one of them. Empty means the whole DirFS is treated as a single docset
+	// (any non-root path is allowed).
+	docsetRoots []string
+
+	// stateMu guards the writeable flag and drains in-flight writes. Writers
+	// take RLock for the duration of a mutation; SetReadonly takes the
+	// exclusive Lock, which blocks until in-flight writers release (drain).
+	stateMu   sync.RWMutex
+	writeable bool
+
+	// commitMu serializes the precondition check-and-swap so concurrent writers
+	// to the same DirFS never interleave their read-current → check → rename.
+	commitMu sync.Mutex
+
+	// maxWriteBytes caps a single atomic write; 0 means use the default.
+	maxWriteBytes int64
 }
 
-// NewDirFS creates a new DirFS rooted at the given directory.
+// defaultMaxWriteBytes bounds a single buffered atomic write (knowledge
+// objects are small).
+const defaultMaxWriteBytes = 8 << 20 // 8 MiB
+
+// NewDirFS creates a new (read-only) DirFS rooted at the given directory.
 func NewDirFS(root string, files config.FilesConfig) *DirFS {
 	return &DirFS{root: root, files: files}
 }
 
-// WithBus returns a copy of DirFS that allows writes via WriteFile and fans
-// every successful write out as a KindPostWrite event on the supplied bus.
-// Pass nil to disable writes.
+// WithBus sets the event bus that receives a KindPostWrite event after every
+// successful write, and returns the receiver for chaining. Pass nil to disable
+// fanout. Configure before the DirFS is shared across goroutines.
 func (d *DirFS) WithBus(bus *eventbus.Bus) *DirFS {
-	c := *d
-	c.bus = bus
-	return &c
+	d.bus = bus
+	return d
 }
 
-// WriteFile writes content to the path inside the DirFS root. Errors if the
-// DirFS was constructed without a bus (read-only mode). On success, emits a
-// KindPostWrite event so subscribers (DB writer, SSE fanout, Notifier,
-// post_write shell hooks) can react.
-func (d *DirFS) WriteFile(p string, content []byte) error {
-	if d.bus == nil {
-		return fmt.Errorf("read-only: DirFS has no event bus configured")
+// WithDocsetRoots sets the Mkdir boundary to the given logical docset roots — a
+// folder may only be created strictly below one of them — and returns the
+// receiver for chaining. Configure before the DirFS is shared across
+// goroutines.
+func (d *DirFS) WithDocsetRoots(roots []string) *DirFS {
+	cleaned := make([]string, 0, len(roots))
+	for _, r := range roots {
+		cleaned = append(cleaned, vfs.CleanPath(r))
+	}
+	d.docsetRoots = cleaned
+	return d
+}
+
+// SetWriteable transitions the substrate to writable. Idempotent.
+func (d *DirFS) SetWriteable() error {
+	d.stateMu.Lock()
+	d.writeable = true
+	d.stateMu.Unlock()
+	return nil
+}
+
+// SetReadonly transitions the substrate back to read-only, draining in-flight
+// writes first (the exclusive lock blocks until current writers release).
+// Idempotent.
+func (d *DirFS) SetReadonly() error {
+	d.stateMu.Lock()
+	d.writeable = false
+	d.stateMu.Unlock()
+	return nil
+}
+
+// WriteFileAtomic commits content to p as a single atomic object. The
+// precondition (opts) is checked under the same lock that guards the commit, so
+// the read-current → check → swap sequence is atomic. Returns the hex SHA-256
+// of the committed bytes.
+func (d *DirFS) WriteFileAtomic(p string, content []byte, opts vfs.WriteOpts) (string, error) {
+	max := d.maxWriteBytes
+	if max == 0 {
+		max = defaultMaxWriteBytes
+	}
+	if int64(len(content)) > max {
+		return "", fmt.Errorf("write rejected: %d bytes exceeds limit of %d", len(content), max)
 	}
 	if !isAllowed(path.Base(p), d.files) {
-		return fmt.Errorf("access denied: %s", p)
+		return "", fmt.Errorf("access denied: %s", p)
+	}
+	if isIgnored(p, d.files) {
+		return "", fmt.Errorf("access denied: %s", p)
+	}
+
+	// Hold RLock for the whole mutation: it permits concurrent writers but
+	// blocks SetReadonly from completing until we release (drain semantics).
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return "", vfs.ErrReadOnly
+	}
+
+	full := d.resolve(p)
+
+	// Precondition check + commit must be atomic with respect to other writers
+	// to the same DirFS. A single mutex serializes the check-and-swap.
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	if opts.IfMatch != nil || opts.IfNoneMatch {
+		cur, exists, err := currentHash(full)
+		if err != nil {
+			return "", err
+		}
+		if opts.IfNoneMatch && exists {
+			return "", &vfs.PreconditionError{Path: vfs.CleanPath(p), Current: cur}
+		}
+		if opts.IfMatch != nil {
+			if !exists || cur != *opts.IfMatch {
+				return "", &vfs.PreconditionError{Path: vfs.CleanPath(p), Current: cur}
+			}
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return "", fmt.Errorf("mkdir: %w", err)
+	}
+	if err := atomicWrite(full, content); err != nil {
+		return "", err
+	}
+
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	if d.bus != nil {
+		_ = d.bus.Publish(context.Background(), eventbus.Event{
+			Kind:        eventbus.KindPostWrite,
+			Path:        vfs.CleanPath(p),
+			ContentHash: hash,
+			Bytes:       len(content),
+		})
+	}
+	return hash, nil
+}
+
+// Mkdir creates a folder at p using plain mkdir semantics (the parent must
+// exist). It errors if p is not strictly below a docset root.
+func (d *DirFS) Mkdir(p string) error {
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return fmt.Errorf("cannot create docset root: %s", p)
 	}
 	if isIgnored(p, d.files) {
 		return fmt.Errorf("access denied: %s", p)
 	}
+	if !d.insideDocset(clean) {
+		return fmt.Errorf("cannot create folder outside a docset: %s", p)
+	}
+
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return vfs.ErrReadOnly
+	}
+
 	full := d.resolve(p)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.Mkdir(full, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	if err := os.WriteFile(full, content, 0o644); err != nil {
-		return fmt.Errorf("write: %w", err)
-	}
-	sum := sha256.Sum256(content)
-	hash := hex.EncodeToString(sum[:])
-	_ = d.bus.Publish(context.Background(), eventbus.Event{
-		Kind:        eventbus.KindPostWrite,
-		Path:        vfs.CleanPath(p),
-		ContentHash: hash,
-		Bytes:       len(content),
-	})
 	return nil
+}
+
+// insideDocset reports whether the cleaned logical path sits strictly below a
+// docset root. With no docset roots configured, the whole DirFS is one docset,
+// so any non-root path qualifies.
+func (d *DirFS) insideDocset(clean string) bool {
+	if len(d.docsetRoots) == 0 {
+		return clean != "/"
+	}
+	for _, root := range d.docsetRoots {
+		if root == "/" {
+			if clean != "/" {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(clean, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *DirFS) resolve(p string) string {
 	p = path.Clean("/" + p)
 	return filepath.Join(d.root, filepath.FromSlash(p))
+}
+
+// currentHash returns the hex SHA-256 of the bytes currently at full, and
+// whether the file exists. A directory is treated as nonexistent for hashing.
+func currentHash(full string) (hash string, exists bool, err error) {
+	data, err := os.ReadFile(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		// A directory read returns an error; treat as "exists, no hash".
+		if info, statErr := os.Stat(full); statErr == nil && info.IsDir() {
+			return "", true, nil
+		}
+		return "", false, err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), true, nil
+}
+
+// atomicWrite writes content to a temp file in the destination directory,
+// fsyncs it, then atomically renames it into place (POSIX atomic swap).
+func atomicWrite(full string, content []byte) error {
+	dir := filepath.Dir(full)
+	tmp, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(full)+"-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("fsync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		cleanup()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := os.Rename(tmpName, full); err != nil {
+		cleanup()
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
 
 func (d *DirFS) Stat(p string) (*vfs.FileInfo, error) {
@@ -189,6 +385,91 @@ func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
 		}
 	}
 	return filtered
+}
+
+// SetWriteable fans out to every writable-capable backend (root + mounts).
+// Read-only backends (EmbedFS, FSAdapter) are skipped. It fails fast if no
+// backend can be made writable at all (e.g. a fully embedded, read-only
+// distribution), so a misconfigured readonly=false is rejected at startup.
+func (m *MergeFS) SetWriteable() error {
+	var enabled int
+	if w, ok := m.root.(vfs.WritableFS); ok {
+		if err := w.SetWriteable(); err != nil {
+			return err
+		}
+		enabled++
+	}
+	for _, fsys := range m.mounts {
+		if w, ok := fsys.(vfs.WritableFS); ok {
+			if err := w.SetWriteable(); err != nil {
+				return err
+			}
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return fmt.Errorf("%w: no writable backend (cannot enable writes)", vfs.ErrReadOnly)
+	}
+	return nil
+}
+
+// SetReadonly fans out to every writable-capable backend, draining in-flight
+// writes on each.
+func (m *MergeFS) SetReadonly() error {
+	return m.fanout(func(w vfs.WritableFS) error { return w.SetReadonly() })
+}
+
+func (m *MergeFS) fanout(fn func(vfs.WritableFS) error) error {
+	if w, ok := m.root.(vfs.WritableFS); ok {
+		if err := fn(w); err != nil {
+			return err
+		}
+	}
+	for _, fsys := range m.mounts {
+		if w, ok := fsys.(vfs.WritableFS); ok {
+			if err := fn(w); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// WriteFileAtomic routes the write to the resolved mount (or root). It errors
+// if the path resolves to the merge root itself or to a read-only backend.
+func (m *MergeFS) WriteFileAtomic(p string, content []byte, opts vfs.WriteOpts) (string, error) {
+	subPath, fsys, err := m.resolve(p)
+	if err != nil {
+		return "", err
+	}
+	if fsys == nil {
+		return "", fmt.Errorf("cannot write to filesystem root: %s", p)
+	}
+	w, ok := fsys.(vfs.WritableFS)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+	}
+	return w.WriteFileAtomic(subPath, content, opts)
+}
+
+// Mkdir routes the folder creation to the resolved mount. Creating a docset
+// (the merge root, or a mount root) is not allowed.
+func (m *MergeFS) Mkdir(p string) error {
+	subPath, fsys, err := m.resolve(p)
+	if err != nil {
+		return err
+	}
+	if fsys == nil {
+		return fmt.Errorf("cannot create docset at filesystem root: %s", p)
+	}
+	if vfs.CleanPath(subPath) == "/" {
+		return fmt.Errorf("cannot create docset root: %s", p)
+	}
+	w, ok := fsys.(vfs.WritableFS)
+	if !ok {
+		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+	}
+	return w.Mkdir(subPath)
 }
 
 func (m *MergeFS) resolve(p string) (string, vfs.FileSystem, error) {
@@ -478,10 +759,13 @@ func (a *FSAdapter) ReadFile(p string) ([]byte, error) {
 	return fs.ReadFile(a.fsys, p)
 }
 
-// Ensure all types implement vfs.FileSystem.
+// Ensure all types implement vfs.FileSystem; DirFS and MergeFS are writable.
+// EmbedFS and FSAdapter are deliberately read-only (no WritableFS).
 var (
 	_ vfs.FileSystem = (*DirFS)(nil)
 	_ vfs.FileSystem = (*MergeFS)(nil)
 	_ vfs.FileSystem = (*EmbedFS)(nil)
 	_ vfs.FileSystem = (*FSAdapter)(nil)
+	_ vfs.WritableFS = (*DirFS)(nil)
+	_ vfs.WritableFS = (*MergeFS)(nil)
 )

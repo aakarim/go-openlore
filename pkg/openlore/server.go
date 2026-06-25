@@ -99,16 +99,41 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		}
 	}
 
+	// Collect docset root display paths so DirFS.Mkdir can enforce the
+	// "strictly below a docset root" boundary.
+	var docsetRoots []string
+	if s.auth != nil {
+		for _, ds := range s.auth.Docsets {
+			for _, pm := range ds.Paths {
+				display := pm.Display
+				if display == "" {
+					display = pm.Source
+				}
+				docsetRoots = append(docsetRoots, display)
+			}
+		}
+	}
+
 	// Set up root directory
 	if rootDir != "" {
-		rootFS := NewDirFS(rootDir, cfg.Files)
+		rootFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots)
 		s.merge.SetRoot(rootFS)
 	}
 
-	// Set up additional folders
+	// Set up additional folders. Each folder mount is itself a docset, so any
+	// non-root path within it is a valid Mkdir target (default boundary).
 	for _, folder := range cfg.Folders {
 		folderFS := NewDirFS(folder.Path, cfg.Files)
 		s.merge.Mount(folder.Name, folderFS)
+	}
+
+	// Enable the experimental writable substrate when the global lock is open.
+	// Fail fast if writes were requested but no backend can support them.
+	if !cfg.Readonly {
+		if err := s.merge.SetWriteable(); err != nil {
+			return nil, fmt.Errorf("enabling writable mode (readonly=false): %w", err)
+		}
+		logger.Info("writable substrate enabled (readonly=false)")
 	}
 
 	// Load skills

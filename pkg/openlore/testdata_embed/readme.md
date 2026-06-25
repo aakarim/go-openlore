@@ -1,0 +1,1 @@
+embedded read-only content

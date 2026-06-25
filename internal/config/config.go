@@ -33,6 +33,13 @@ type Config struct {
 	Passkeys        PasskeysConfig
 	Logger          *slog.Logger
 
+	// Readonly is the global write lock. Default true: the substrate is a
+	// read-only filesystem and no write verbs are available. Set false to
+	// enable the experimental writable substrate (SetWriteable is called at
+	// startup). Global readonly is a hard physical lock — a per-docset
+	// readonly=false cannot loosen it.
+	Readonly bool
+
 	// Track sources for conflict detection.
 	configFileLoaded   bool
 	embeddedConfigUsed bool
@@ -77,6 +84,13 @@ type DocsetSpec struct {
 	Paths          []PathMapping `json:"paths"`
 	PublishDir     string        `json:"publish_dir,omitempty"`
 	MaxPublishSize int64         `json:"max_publish_size,omitempty"` // bytes; 0 = use default (2.5MB)
+
+	// Readonly is the per-docset policy check (enforced in the write pipeline,
+	// not on the substrate). nil means "inherit" (writable when the global lock
+	// is open). A docset can only further restrict: setting it true blocks
+	// writes to this docset even when the global lock is open; setting it false
+	// is meaningless when the global lock is closed.
+	Readonly *bool `json:"readonly,omitempty"`
 }
 
 // PathMapping represents a path entry — either a simple string path or a
@@ -143,6 +157,7 @@ type fileConfig struct {
 	Files           *filesYAML     `yaml:"files"`
 	Folders         []FolderConfig `yaml:"folders"`
 	Passkeys        *passkeysYAML  `yaml:"passkeys"`
+	Readonly        *bool          `yaml:"readonly"`
 }
 
 type passkeysYAML struct {
@@ -172,6 +187,7 @@ func New(opts ...Option) (Config, error) {
 		AllowKeyless:    true,
 		UnknownIdentity: "allow",
 		DefaultCwd:      "/openlore",
+		Readonly:        true, // safe default: read-only substrate
 		Files: FilesConfig{
 			Allowed: []string{
 				"*.md", "*.markdown", "*.txt",
@@ -281,6 +297,9 @@ func WithConfigFile(path string) Option {
 		if len(fc.Folders) > 0 {
 			cfg.Folders = fc.Folders
 		}
+		if fc.Readonly != nil {
+			cfg.Readonly = *fc.Readonly
+		}
 		applyPasskeysConfig(cfg, fc.Passkeys)
 
 		return nil
@@ -360,6 +379,9 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			}
 			if len(fc.Folders) > 0 {
 				cfg.Folders = fc.Folders
+			}
+			if fc.Readonly != nil {
+				cfg.Readonly = *fc.Readonly
 			}
 			applyPasskeysConfig(cfg, fc.Passkeys)
 		}

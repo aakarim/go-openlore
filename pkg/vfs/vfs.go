@@ -41,6 +41,75 @@ type FileSystem interface {
 	ReadFile(path string) ([]byte, error)
 }
 
+// WriteOpts carries the precondition contract for an atomic write. The zero
+// value means "unconditional overwrite" (last-write-wins, but still atomic).
+//
+// Precedence: IfNoneMatch (create-only) is mutually exclusive with IfMatch.
+type WriteOpts struct {
+	// IfMatch, when non-nil, requires the current content hash of the target
+	// to equal *IfMatch before the write commits. A nonexistent target fails
+	// (you cannot match a hash that has no bytes). This is the hex SHA-256 of
+	// the exact bytes ReadFile returns.
+	IfMatch *string
+
+	// IfNoneMatch, when true, requires the target to not already exist
+	// (create-only). Fails with a conflict if it does.
+	IfNoneMatch bool
+}
+
+// WritableFS is the read+write filesystem interface. A backend only satisfies
+// it if it can physically persist writes; embedded/read-only backends
+// (embed.FS, plain fs.FS adapters) deliberately do not implement it.
+//
+// Writes are whole-object and atomic by construction — there is no streaming,
+// offset, or partial-write surface. The substrate's write capability is a
+// stateful flag toggled by SetWriteable/SetReadonly; while read-only every
+// mutating call returns an error.
+type WritableFS interface {
+	FileSystem
+
+	// SetWriteable transitions the backend to writable. It returns an error
+	// if the backend can't support writes at all (not if it is already
+	// writable — that is an idempotent no-op success).
+	SetWriteable() error
+
+	// SetReadonly transitions the backend back to read-only. It is idempotent
+	// and drains in-flight writes: a write that already passed its precondition
+	// check is allowed to complete, and SetReadonly blocks until the substrate
+	// is quiescent before returning.
+	SetReadonly() error
+
+	// WriteFileAtomic commits data to name as a single atomic whole-object
+	// operation, honoring the WriteOpts precondition. It returns the hex
+	// SHA-256 of the committed bytes. It errors when the backend is currently
+	// read-only or when the precondition fails.
+	WriteFileAtomic(name string, data []byte, opts WriteOpts) (newHash string, err error)
+
+	// Mkdir creates a folder. It uses plain mkdir semantics (the parent must
+	// exist) but errors if name is not strictly inside a docset — you cannot
+	// create a docset, nor anything at or above a docset root, through the FS.
+	Mkdir(name string) error
+}
+
+// ErrReadOnly is returned by mutating operations when the substrate is in
+// read-only mode.
+var ErrReadOnly = fmt.Errorf("read-only filesystem")
+
+// PreconditionError is returned when a WriteOpts precondition (IfMatch /
+// IfNoneMatch) is not satisfied. Current is the hash of the existing bytes
+// (empty if the target does not exist).
+type PreconditionError struct {
+	Path    string
+	Current string
+}
+
+func (e *PreconditionError) Error() string {
+	if e.Current == "" {
+		return fmt.Sprintf("precondition failed: %s does not exist; re-read and retry", e.Path)
+	}
+	return fmt.Sprintf("precondition failed: %s current hash %s; re-read and retry", e.Path, e.Current)
+}
+
 // WalkDir walks the filesystem tree rooted at root, calling fn for each file or directory.
 func WalkDir(fsys FileSystem, root string, fn func(path string, info *FileInfo, err error) error) error {
 	root = CleanPath(root)
