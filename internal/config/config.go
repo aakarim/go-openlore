@@ -411,6 +411,15 @@ func WithMetricsPort(port int) Option {
 	}
 }
 
+// WithReadonly sets the global write lock. true (the default) keeps the
+// substrate read-only; false enables the experimental writable substrate.
+func WithReadonly(readonly bool) Option {
+	return func(cfg *Config) error {
+		cfg.Readonly = readonly
+		return nil
+	}
+}
+
 // WithHostKeyPath sets the path to the SSH host key.
 func WithHostKeyPath(path string) Option {
 	return func(cfg *Config) error {

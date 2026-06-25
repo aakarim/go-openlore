@@ -53,5 +53,6 @@ var (
 	WithCAKeysFile      = config.WithCAKeysFile
 	WithHostCertFile    = config.WithHostCertFile
 	WithPasskeys        = config.WithPasskeys
+	WithReadonly        = config.WithReadonly
 	LoadAuthConfig      = config.LoadAuthConfig
 )

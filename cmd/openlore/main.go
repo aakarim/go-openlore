@@ -299,6 +299,7 @@ func main() {
 	skillsDir := flag.String("skills-dir", "", "directory containing runtime skills")
 	allowed := flag.String("allowed", "", "comma-separated file patterns to serve (e.g. '*.md,*.txt')")
 	ignore := flag.String("ignore", "", "comma-separated patterns to ignore (e.g. '.git,node_modules')")
+	readonly := flag.Bool("readonly", true, "global write lock; pass --readonly=false to enable the experimental writable substrate")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: openlore [flags] [directory]\n\n")
@@ -384,6 +385,9 @@ func main() {
 	}
 	if *skillsDir != "" {
 		opts = append(opts, openlore.WithSkillsDir(*skillsDir))
+	}
+	if isFlagSet("readonly") {
+		opts = append(opts, openlore.WithReadonly(*readonly))
 	}
 
 	// Create server
