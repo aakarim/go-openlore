@@ -24,14 +24,18 @@ type Config struct {
 	SkillsDir       string
 	HTTPPort        int
 	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
-	TLSCert         string
-	TLSKey          string
-	CAKeysFile      string
-	HostCertFile    string
-	Files           FilesConfig
-	Folders         []FolderConfig
-	Passkeys        PasskeysConfig
-	Logger          *slog.Logger
+	// MCPEnabled controls whether the always-on MCP-over-HTTP endpoint runs.
+	// Default true. The endpoint is served on MCPPort.
+	MCPEnabled   bool
+	MCPPort      int
+	TLSCert      string
+	TLSKey       string
+	CAKeysFile   string
+	HostCertFile string
+	Files        FilesConfig
+	Folders      []FolderConfig
+	Passkeys     PasskeysConfig
+	Logger       *slog.Logger
 
 	// Readonly is the global write lock. Default true: the substrate is a
 	// read-only filesystem and no write verbs are available. Set false to
@@ -149,6 +153,7 @@ type fileConfig struct {
 	SkillsDir       string         `yaml:"skills_dir"`
 	HTTPPort        int            `yaml:"http_port"`
 	ExternalSSHPort int            `yaml:"external_ssh_port"`
+	MCP             *mcpYAML       `yaml:"mcp"`
 	TLSCert         string         `yaml:"tls_cert"`
 	TLSKey          string         `yaml:"tls_key"`
 	CAKeysFile      string         `yaml:"ca_keys_file"`
@@ -158,6 +163,11 @@ type fileConfig struct {
 	Folders         []FolderConfig `yaml:"folders"`
 	Passkeys        *passkeysYAML  `yaml:"passkeys"`
 	Readonly        *bool          `yaml:"readonly"`
+}
+
+type mcpYAML struct {
+	Enabled *bool `yaml:"enabled"`
+	Port    int   `yaml:"port"`
 }
 
 type passkeysYAML struct {
@@ -183,6 +193,8 @@ func New(opts ...Option) (Config, error) {
 		Port:            2222,
 		HTTPPort:        8080,
 		MetricsPort:     3000,
+		MCPEnabled:      true,
+		MCPPort:         8081,
 		HostKeyPath:     ".ssh/openlore_ed25519",
 		AllowKeyless:    true,
 		UnknownIdentity: "allow",
@@ -301,6 +313,7 @@ func WithConfigFile(path string) Option {
 			cfg.Readonly = *fc.Readonly
 		}
 		applyPasskeysConfig(cfg, fc.Passkeys)
+		applyMCPConfig(cfg, fc.MCP)
 
 		return nil
 	}
@@ -384,6 +397,7 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 				cfg.Readonly = *fc.Readonly
 			}
 			applyPasskeysConfig(cfg, fc.Passkeys)
+			applyMCPConfig(cfg, fc.MCP)
 		}
 
 		// MOTD fallback: only set if nothing else has set it yet
@@ -535,6 +549,35 @@ func WithTLS(cert, key string) Option {
 	return func(cfg *Config) error {
 		cfg.TLSCert = cert
 		cfg.TLSKey = key
+		return nil
+	}
+}
+
+// applyMCPConfig merges an mcpYAML into the config.
+func applyMCPConfig(cfg *Config, m *mcpYAML) {
+	if m == nil {
+		return
+	}
+	if m.Enabled != nil {
+		cfg.MCPEnabled = *m.Enabled
+	}
+	if m.Port != 0 {
+		cfg.MCPPort = m.Port
+	}
+}
+
+// WithMCPPort sets the MCP-over-HTTP endpoint port. 0 disables it.
+func WithMCPPort(port int) Option {
+	return func(cfg *Config) error {
+		cfg.MCPPort = port
+		return nil
+	}
+}
+
+// WithMCPEnabled toggles the MCP-over-HTTP endpoint.
+func WithMCPEnabled(enabled bool) Option {
+	return func(cfg *Config) error {
+		cfg.MCPEnabled = enabled
 		return nil
 	}
 }

@@ -7,6 +7,10 @@ metrics_port: 0
 default_cwd: /
 auth_file: ./lore.json
 
+mcp:
+  enabled: true
+  port: 8081
+
 passkeys:
   enabled: true
   rp_id: openlore.sh

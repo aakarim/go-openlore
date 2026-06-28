@@ -20,6 +20,18 @@ port: 2222
 # Prometheus metrics port. Set to 0 to disable.
 metrics_port: 3000
 
+# ── MCP (Model Context Protocol) ──────────────────────
+#
+# The MCP-over-HTTP endpoint lets MCP-aware clients (Claude Desktop,
+# Cowork, etc.) browse your docs using the Streamable HTTP transport.
+# It exposes the same filesystem as the SSH shell via two tools:
+# `shell` and `list_commands`.
+#
+# Enabled by default. Set enabled: false (or port: 0) to turn it off.
+mcp:
+  enabled: true
+  port: 8081
+
 # TLS certificate and key for the HTTP server (optional).
 # Only applies to the HTTP front page, not SSH.
 # tls_cert: ./cert.pem

@@ -292,6 +292,7 @@ func main() {
 	configFile := flag.String("config", "./openlore.yml", "path to config file")
 	flag.StringVar(configFile, "c", "./openlore.yml", "path to config file (shorthand)")
 	httpPort := flag.Int("http-port", 0, "HTTP front page port (default 8080, 0 to disable)")
+	mcpPort := flag.Int("mcp-port", 0, "MCP-over-HTTP endpoint port (default 8081, 0 to disable)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file for HTTP server")
 	tlsKey := flag.String("tls-key", "", "TLS key file for HTTP server")
 	caKeysFile := flag.String("ca-keys", "", "path to trusted CA public keys file for SSH certificate auth")
@@ -374,6 +375,9 @@ func main() {
 	if isFlagSet("http-port") {
 		opts = append(opts, openlore.WithHTTPPort(*httpPort))
 	}
+	if isFlagSet("mcp-port") {
+		opts = append(opts, openlore.WithMCPPort(*mcpPort))
+	}
 	if *tlsCert != "" && *tlsKey != "" {
 		opts = append(opts, openlore.WithTLS(*tlsCert, *tlsKey))
 	}
@@ -426,6 +430,9 @@ func main() {
 	}
 	if cfg.HTTPPort > 0 {
 		fmt.Printf("  HTTP:       http://localhost:%d\n", cfg.HTTPPort)
+	}
+	if cfg.MCPEnabled && cfg.MCPPort > 0 {
+		fmt.Printf("  MCP:        http://localhost:%d\n", cfg.MCPPort)
 	}
 	fmt.Println()
 

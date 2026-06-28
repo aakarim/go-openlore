@@ -32,6 +32,25 @@ Agent → SSH → OpenLore → Your Docs
 
 ## Quick Start
 
+The fastest way to get going is to let your agent set everything up. Pipe the
+`teach` skill straight into your agent CLI:
+
+```bash
+# Teach your agent how to set up OpenLore
+ssh openlore.sh teach | your-agent-cli
+
+# Add documentation access instructions to AGENTS.md
+ssh openlore.sh agents >> AGENTS.md
+```
+
+The `teach` skill walks your agent through installing OpenLore, embedding docs,
+building a distributable binary, and optionally setting up per-agent access
+control.
+
+### Manual setup
+
+If you'd rather drive it yourself:
+
 ```bash
 # Install
 go install github.com/aakarim/go-openlore/cmd/openlore@latest
@@ -47,20 +66,6 @@ ssh -p 2222 localhost "grep -r 'authentication' /docs"
 ssh -p 2222 localhost "find / -name '*.md' | head -20"
 ssh -p 2222 localhost "cat /docs/api-reference.md"
 ```
-
-## Teach Your Agent
-
-Pipe the `teach` skill directly to your agent to get started:
-
-```bash
-# Teach your agent how to set up OpenLore
-ssh openlore.sh teach | your-agent-cli
-
-# Add documentation access instructions to AGENTS.md
-ssh openlore.sh agents >> AGENTS.md
-```
-
-The `teach` skill walks your agent through cloning the repo, embedding docs, building a distributable binary, and optionally setting up per-agent access control.
 
 ## Embedding Docs into a Binary
 
@@ -266,11 +271,14 @@ Usage: openlore [command] [flags] [directory]
 Commands:
   version           Print version
   export -o <dir>   Export embedded docs to a directory
+  mcp [dir]         Run as an MCP server over stdio (Claude Desktop, Cowork, etc.)
+  mcpb [-o file]    Package the binary as an MCPB desktop extension
   identity add      Add a public key to lore.json
 
 Flags:
   -p, --port           SSH server port (default 2222)
   --http-port          HTTP front page port (default 8080, 0 to disable)
+  --mcp-port           MCP-over-HTTP endpoint port (default 8081, 0 to disable)
   --metrics-port       Prometheus metrics port, 0 to disable (default 3000)
   --host-key           Path to host key file (default .ssh/openlore_ed25519)
   --motd               Inline MOTD string
@@ -310,6 +318,113 @@ Connect to the docs server for project documentation:
 Available commands: ls, cat, grep, find, tree, head, tail, wc, stat, sort, uniq, cut, sed, awk, jq, xargs, and more. Run 'help' for the full list.
 ```
 
+## MCP Server
+
+OpenLore can also speak the [Model Context Protocol](https://modelcontextprotocol.io)
+so clients like Claude Desktop, Cowork, and other MCP-aware agents can browse
+your docs without SSH. It exposes the same filesystem as the SSH shell via two
+tools:
+
+| Tool | Description |
+|------|-------------|
+| `shell` | Execute a bash command against the docs filesystem (`ls`, `cat`, `grep`, `find`, pipes, loops, and all the commands listed above) |
+| `list_commands` | List all available shell commands |
+
+### Always-on HTTP endpoint (default)
+
+The main server starts an MCP-over-HTTP endpoint (Streamable HTTP transport)
+**on by default**, alongside SSH and the HTTP front page:
+
+```bash
+openlore ./docs
+#   SSH:  ssh -p 2222 localhost
+#   HTTP: http://localhost:8080
+#   MCP:  http://localhost:8081
+```
+
+Point a Streamable-HTTP MCP client at `http://localhost:8081`. Configure it via
+`openlore.yml`:
+
+```yaml
+mcp:
+  enabled: true   # on by default; set false to disable
+  port: 8081      # set 0 to disable
+```
+
+Or with flags: `--mcp-port 9000` to change the port, `--mcp-port 0` to disable.
+
+### Stdio (Claude Desktop, Cowork, etc.)
+
+For clients that launch a local process and talk over stdio, run the dedicated
+`mcp` subcommand instead:
+
+```bash
+# Serve the embedded docs over MCP (stdio)
+openlore mcp
+
+# Or serve a directory
+openlore mcp ./docs
+
+# Restrict which files are exposed
+openlore mcp --allowed '*.md,*.txt' --ignore '.git,node_modules' ./docs
+```
+
+Point your MCP client at the command. For example, in a `mcpServers` config:
+
+```json
+{
+  "mcpServers": {
+    "openlore": {
+      "command": "openlore",
+      "args": ["mcp", "./docs"]
+    }
+  }
+}
+```
+
+### Package as a desktop extension (.mcpb)
+
+For one-click installation in Claude Desktop, package the binary (with its
+embedded docs) as an [MCPB](https://github.com/anthropics/mcpb) extension:
+
+```bash
+# Build a binary with your docs embedded, then package it
+go build -o openlore ./cmd/openlore
+./openlore mcpb -o openlore.mcpb
+```
+
+Double-click the resulting `.mcpb` file (or drag it into Claude Desktop) to
+install. If the binary has no embedded docs, the user is prompted to select a
+docs directory on install. Add `--docs-dir ./docs` to bundle a directory.
+
+### As a library
+
+Build an MCP server backed by any filesystem in Go:
+
+```go
+package main
+
+import (
+    "context"
+
+    openlore "github.com/aakarim/go-openlore/pkg/openlore"
+    "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func main() {
+    fs := openlore.NewDirFS("./docs", openlore.FilesConfig{
+        Allowed: []string{"*.md", "*.txt"},
+    })
+
+    srv := openlore.NewMCPServer(fs,
+        openlore.WithMCPServerName("Company Knowledge Base"),
+        openlore.WithMCPInstructions("Use grep and cat to explore the docs."),
+    )
+
+    srv.Run(context.Background(), &mcp.StdioTransport{})
+}
+```
+
 ## SSHFS Mounting
 
 Mount your docs as a local filesystem using SFTP:
@@ -343,6 +458,11 @@ http_port: 8080
 host_key: .ssh/openlore_ed25519
 allow_keyless: true
 default_cwd: /docs
+
+# MCP-over-HTTP endpoint (on by default). Set enabled: false or port: 0 to disable.
+mcp:
+  enabled: true
+  port: 8081
 
 motd: |
   Welcome to Acme Corp docs.

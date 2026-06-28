@@ -41,6 +41,19 @@ find / -name "*.md"
 cat /docs/config.json | jq '.settings'
 ```
 
+## Access via MCP
+
+OpenLore also speaks the Model Context Protocol. The main server starts an
+MCP-over-HTTP endpoint **on by default** (port 8081), so MCP-aware clients like
+Claude Desktop and Cowork can browse your docs without SSH:
+
+```bash
+openlore ./docs
+#   MCP:  http://localhost:8081
+```
+
+See `cat /mcp.md` for stdio mode, config, and desktop-extension packaging.
+
 ## Embed Docs into a Binary
 
 The killer feature: bake your docs into a single distributable binary.
@@ -51,6 +64,7 @@ The killer feature: bake your docs into a single distributable binary.
 
 ## Next Steps
 
+- Read `mcp.md` to connect MCP-aware clients (Claude Desktop, Cowork, etc.)
 - Run `teach` to learn how to set up OpenLore for your project
 - Run `agents` to get an AGENTS.md snippet for your AI agents
 - Visit https://github.com/aakarim/go-openlore for full documentation
