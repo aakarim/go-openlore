@@ -25,9 +25,9 @@ type Config struct {
 	HTTPPort        int
 	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
 	// MCPEnabled controls whether the always-on MCP-over-HTTP endpoint runs.
-	// Default true. The endpoint is served on MCPPort.
+	// Default true. The endpoint is mounted at MCPPath on the HTTP server.
 	MCPEnabled   bool
-	MCPPort      int
+	MCPPath      string
 	TLSCert      string
 	TLSKey       string
 	CAKeysFile   string
@@ -166,8 +166,8 @@ type fileConfig struct {
 }
 
 type mcpYAML struct {
-	Enabled *bool `yaml:"enabled"`
-	Port    int   `yaml:"port"`
+	Enabled *bool  `yaml:"enabled"`
+	Path    string `yaml:"path"`
 }
 
 type passkeysYAML struct {
@@ -194,7 +194,7 @@ func New(opts ...Option) (Config, error) {
 		HTTPPort:        8080,
 		MetricsPort:     3000,
 		MCPEnabled:      true,
-		MCPPort:         8081,
+		MCPPath:         "/mcp",
 		HostKeyPath:     ".ssh/openlore_ed25519",
 		AllowKeyless:    true,
 		UnknownIdentity: "allow",
@@ -561,15 +561,16 @@ func applyMCPConfig(cfg *Config, m *mcpYAML) {
 	if m.Enabled != nil {
 		cfg.MCPEnabled = *m.Enabled
 	}
-	if m.Port != 0 {
-		cfg.MCPPort = m.Port
+	if m.Path != "" {
+		cfg.MCPPath = m.Path
 	}
 }
 
-// WithMCPPort sets the MCP-over-HTTP endpoint port. 0 disables it.
-func WithMCPPort(port int) Option {
+// WithMCPPath sets the path the MCP-over-HTTP endpoint is mounted at on the
+// HTTP server (e.g. "/mcp").
+func WithMCPPath(path string) Option {
 	return func(cfg *Config) error {
-		cfg.MCPPort = port
+		cfg.MCPPath = path
 		return nil
 	}
 }

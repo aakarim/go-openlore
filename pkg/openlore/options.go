@@ -49,7 +49,7 @@ var (
 	WithLogger          = config.WithLogger
 	WithSkillsDir       = config.WithSkillsDir
 	WithHTTPPort        = config.WithHTTPPort
-	WithMCPPort         = config.WithMCPPort
+	WithMCPPath         = config.WithMCPPath
 	WithMCPEnabled      = config.WithMCPEnabled
 	WithTLS             = config.WithTLS
 	WithCAKeysFile      = config.WithCAKeysFile

@@ -11,27 +11,30 @@ through two tools:
 
 ## Always-on HTTP endpoint (default)
 
-The main server starts an MCP-over-HTTP endpoint (Streamable HTTP transport)
-**on by default**, alongside SSH and the HTTP front page:
+The MCP-over-HTTP endpoint (Streamable HTTP transport) is **on by default** and
+mounted at a path on the HTTP server — so it reuses the same port and TLS as the
+front page (and any load balancer rule fronting it):
 
 ```bash
 openlore ./docs
 #   SSH:  ssh -p 2222 localhost
 #   HTTP: http://localhost:8080
-#   MCP:  http://localhost:8081
+#   MCP:  http://localhost:8080/mcp
 ```
 
-Point a Streamable-HTTP MCP client at `http://localhost:8081`.
+Point a Streamable-HTTP MCP client at `http://localhost:8080/mcp` (behind a
+TLS-terminating proxy/load balancer this is `https://your-host/mcp`).
 
 Configure it in `openlore.yml`:
 
 ```yaml
 mcp:
   enabled: true   # on by default; set false to disable
-  port: 8081      # set 0 to disable
+  path: /mcp      # path on the HTTP server
 ```
 
-Or with flags: `--mcp-port 9000` to change the port, `--mcp-port 0` to disable.
+Or with flags: `--mcp-path /custom` to change the path. The endpoint requires
+the HTTP server (`http_port`) to be enabled.
 
 ## Stdio (Claude Desktop, Cowork, etc.)
 

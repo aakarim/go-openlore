@@ -9,7 +9,7 @@ auth_file: ./lore.json
 
 mcp:
   enabled: true
-  port: 8081
+  path: /mcp
 
 passkeys:
   enabled: true

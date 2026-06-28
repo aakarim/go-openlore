@@ -5,11 +5,20 @@ external_ssh_port: 22
 http_port: 8080
 metrics_port: 0
 default_cwd: /
+
 auth_file: ./lore.json
+data_dir: ./data
+
+# How whole-file overwrites (>, tee, sed -i, publish) defend against concurrent
+# writers. "hash" (the default) makes them compare-and-swap: a write that would
+# clobber a change made since the file was read is rejected. "last_write_wins"
+# makes overwrites unconditional. Append (>>) and patch are always CAS. Can be
+# overridden per docset via write_conflict_policy in lore.json.
+write_conflict_policy: hash
 
 mcp:
   enabled: true
-  port: 8081
+  path: /mcp
 
 passkeys:
   enabled: true

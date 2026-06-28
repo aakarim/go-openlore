@@ -42,7 +42,6 @@ type Server struct {
 	metrics  *metrics.Metrics
 	srv      *ssh.Server
 	httpSrv  *httpserver.Server
-	mcpSrv   *http.Server
 	passkeys *passkeys.Passkeys
 	logger   *slog.Logger
 	motd     string
@@ -599,12 +598,27 @@ func (s *Server) ListenAndServe() error {
 		webFS := assets.Web()
 		if webFS != nil {
 			httpCfg := httpserver.Config{
-				Port:        s.config.HTTPPort,
-				TLSCert:     s.config.TLSCert,
-				TLSKey:      s.config.TLSKey,
-				HostKeyPath: s.config.HostKeyPath,
-				SSHPort:     s.advertisedSSHPort(),
-				Logger:      s.logger,
+				Port:          s.config.HTTPPort,
+				TLSCert:       s.config.TLSCert,
+				TLSKey:        s.config.TLSKey,
+				HostKeyPath:   s.config.HostKeyPath,
+				SSHPort:       s.advertisedSSHPort(),
+				Logger:        s.logger,
+				ExtraHandlers: map[string]http.Handler{},
+			}
+
+			// Mount the MCP-over-HTTP (Streamable HTTP) endpoint on the HTTP
+			// server at the configured path, so it reuses the same port/TLS as
+			// the front page (and any load balancer rule fronting it).
+			if s.config.MCPEnabled && s.config.MCPPath != "" {
+				mcpPath := "/" + strings.Trim(s.config.MCPPath, "/")
+				mcpServer := NewMCPServer(s.fs)
+				mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+					return mcpServer
+				}, nil)
+				httpCfg.ExtraHandlers[mcpPath] = mcpHandler
+				httpCfg.ExtraHandlers[mcpPath+"/"] = mcpHandler
+				s.logger.Info("MCP endpoint mounted", "path", mcpPath, "http_port", s.config.HTTPPort)
 			}
 
 			if s.passkeys != nil {
@@ -637,9 +651,7 @@ func (s *Server) ListenAndServe() error {
 					lorePath = "/lore"
 				}
 				lorePath = "/" + strings.Trim(lorePath, "/")
-				httpCfg.ExtraHandlers = map[string]http.Handler{
-					lorePath + "/": s.passkeys.LoreBrowserHandler(s.fs),
-				}
+				httpCfg.ExtraHandlers[lorePath+"/"] = s.passkeys.LoreBrowserHandler(s.fs)
 
 				cmds.PublishBaseURL = baseURL + lorePath
 			}
@@ -650,45 +662,14 @@ func (s *Server) ListenAndServe() error {
 		}
 	}
 
-	if s.config.MCPEnabled && s.config.MCPPort > 0 {
-		s.startMCPServer()
-	}
-
 	s.logger.Info("SSH server starting", "port", s.config.Port)
 	return s.srv.ListenAndServe()
-}
-
-// startMCPServer starts the always-on MCP-over-HTTP (streamable) endpoint on
-// the configured MCP port. Clients connect to http://host:<mcp_port> using the
-// Streamable HTTP transport. The endpoint is backed by the same filesystem the
-// SSH shell serves.
-func (s *Server) startMCPServer() {
-	mcpServer := NewMCPServer(s.fs)
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return mcpServer
-	}, nil)
-
-	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.config.MCPPort),
-		Handler: handler,
-	}
-	s.mcpSrv = srv
-
-	go func() {
-		s.logger.Info("MCP server starting", "port", s.config.MCPPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.Error("MCP server error", "error", err)
-		}
-	}()
 }
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.passkeys != nil {
 		s.passkeys.Shutdown()
-	}
-	if s.mcpSrv != nil {
-		_ = s.mcpSrv.Shutdown(ctx)
 	}
 	if s.srv == nil {
 		return nil

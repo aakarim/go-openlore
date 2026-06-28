@@ -278,7 +278,7 @@ Commands:
 Flags:
   -p, --port           SSH server port (default 2222)
   --http-port          HTTP front page port (default 8080, 0 to disable)
-  --mcp-port           MCP-over-HTTP endpoint port (default 8081, 0 to disable)
+  --mcp-path           MCP-over-HTTP endpoint path on the HTTP server (default /mcp)
   --metrics-port       Prometheus metrics port, 0 to disable (default 3000)
   --host-key           Path to host key file (default .ssh/openlore_ed25519)
   --motd               Inline MOTD string
@@ -332,26 +332,30 @@ tools:
 
 ### Always-on HTTP endpoint (default)
 
-The main server starts an MCP-over-HTTP endpoint (Streamable HTTP transport)
-**on by default**, alongside SSH and the HTTP front page:
+The MCP-over-HTTP endpoint (Streamable HTTP transport) is **on by default**,
+mounted at a path on the HTTP server. Because it shares the HTTP port, it reuses
+the same TLS and any load balancer rule already fronting the front page — no
+extra port to open:
 
 ```bash
 openlore ./docs
 #   SSH:  ssh -p 2222 localhost
 #   HTTP: http://localhost:8080
-#   MCP:  http://localhost:8081
+#   MCP:  http://localhost:8080/mcp
 ```
 
-Point a Streamable-HTTP MCP client at `http://localhost:8081`. Configure it via
+Point a Streamable-HTTP MCP client at `http://localhost:8080/mcp` (behind a
+TLS-terminating proxy this is `https://your-host/mcp`). Configure it via
 `openlore.yml`:
 
 ```yaml
 mcp:
   enabled: true   # on by default; set false to disable
-  port: 8081      # set 0 to disable
+  path: /mcp      # path on the HTTP server
 ```
 
-Or with flags: `--mcp-port 9000` to change the port, `--mcp-port 0` to disable.
+Or with flags: `--mcp-path /custom` to change the path. The endpoint requires
+the HTTP server (`--http-port`) to be enabled.
 
 ### Stdio (Claude Desktop, Cowork, etc.)
 
@@ -459,10 +463,10 @@ host_key: .ssh/openlore_ed25519
 allow_keyless: true
 default_cwd: /docs
 
-# MCP-over-HTTP endpoint (on by default). Set enabled: false or port: 0 to disable.
+# MCP-over-HTTP endpoint (on by default). Set enabled: false to disable.
 mcp:
   enabled: true
-  port: 8081
+  path: /mcp
 
 motd: |
   Welcome to Acme Corp docs.

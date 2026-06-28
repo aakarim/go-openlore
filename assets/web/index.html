@@ -239,14 +239,15 @@ ssh -p 2222 localhost "grep -r 'authentication' /docs"</pre>
             <h2>MCP Support</h2>
             <p>
                 Prefer the Model Context Protocol? The server also exposes an
-                MCP-over-HTTP endpoint <strong>on by default</strong> (port 8081),
-                so clients like Claude Desktop and Cowork can browse your docs
-                without SSH. It serves the same filesystem through a
-                <code>shell</code> tool and a <code>list_commands</code> tool.
+                MCP-over-HTTP endpoint <strong>on by default</strong> at
+                <code>/mcp</code> on the HTTP server, so clients like Claude
+                Desktop and Cowork can browse your docs without SSH. It serves
+                the same filesystem through a <code>shell</code> tool and a
+                <code>list_commands</code> tool.
             </p>
             <pre>openlore ./docs
 #   SSH:  ssh -p 2222 localhost
-#   MCP:  http://localhost:8081
+#   MCP:  http://localhost:8080/mcp
 
 # Or run a stdio MCP server for desktop clients
 openlore mcp ./docs</pre>

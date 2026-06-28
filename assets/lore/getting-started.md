@@ -43,13 +43,14 @@ cat /docs/config.json | jq '.settings'
 
 ## Access via MCP
 
-OpenLore also speaks the Model Context Protocol. The main server starts an
-MCP-over-HTTP endpoint **on by default** (port 8081), so MCP-aware clients like
-Claude Desktop and Cowork can browse your docs without SSH:
+OpenLore also speaks the Model Context Protocol. The main server exposes an
+MCP-over-HTTP endpoint **on by default**, mounted at `/mcp` on the HTTP server
+(so it shares the same port and TLS), letting MCP-aware clients like Claude
+Desktop and Cowork browse your docs without SSH:
 
 ```bash
 openlore ./docs
-#   MCP:  http://localhost:8081
+#   MCP:  http://localhost:8080/mcp
 ```
 
 See `cat /mcp.md` for stdio mode, config, and desktop-extension packaging.

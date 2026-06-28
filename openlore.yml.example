@@ -27,10 +27,12 @@ metrics_port: 3000
 # It exposes the same filesystem as the SSH shell via two tools:
 # `shell` and `list_commands`.
 #
-# Enabled by default. Set enabled: false (or port: 0) to turn it off.
+# It is mounted at `path` on the HTTP server (http_port above), so it
+# reuses the same port and TLS — and any load balancer rule fronting it.
+# Enabled by default. Set enabled: false to turn it off.
 mcp:
   enabled: true
-  port: 8081
+  path: /mcp
 
 # TLS certificate and key for the HTTP server (optional).
 # Only applies to the HTTP front page, not SSH.
