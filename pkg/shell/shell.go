@@ -19,6 +19,15 @@ type Shell struct {
 	fs  vfs.FileSystem
 	cwd string
 	env map[string]string
+	// allowedActions is the per-session capability set (Part B). nil means
+	// "unrestricted" — every action is allowed (the default, backward
+	// compatible). When non-nil, a command (or redirect) whose capability
+	// class is absent is treated as if it does not exist.
+	allowedActions map[cmds.Action]bool
+	// conflictPolicyFn resolves the write-conflict policy for a resolved path.
+	// nil means "use the default" (vfs.PolicyHash). The server sets this to a
+	// per-docset resolver; standalone shells get the default.
+	conflictPolicyFn func(resolvedPath string) vfs.WriteConflictPolicy
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -27,6 +36,42 @@ func NewShell(fs vfs.FileSystem) *Shell {
 		fs:  fs,
 		cwd: "/",
 	}
+}
+
+// SetAllowedActions restricts the shell to the given capability classes
+// (Part B). Passing nil (or not calling this) leaves the shell unrestricted.
+// ActionRead is always implied so that read-only commands and introspection
+// (help, ls, …) keep working.
+func (s *Shell) SetAllowedActions(actions []cmds.Action) {
+	set := map[cmds.Action]bool{cmds.ActionRead: true}
+	for _, a := range actions {
+		set[a] = true
+	}
+	s.allowedActions = set
+}
+
+// ActionAllowed reports whether the session may perform the capability class.
+// An unrestricted shell (allowedActions == nil) permits everything.
+func (s *Shell) ActionAllowed(a cmds.Action) bool {
+	if s.allowedActions == nil {
+		return true
+	}
+	return s.allowedActions[a]
+}
+
+// SetConflictPolicyFn installs a resolver that maps a resolved path to its
+// write-conflict policy. Passing nil restores the default (vfs.PolicyHash).
+func (s *Shell) SetConflictPolicyFn(fn func(resolvedPath string) vfs.WriteConflictPolicy) {
+	s.conflictPolicyFn = fn
+}
+
+// WriteConflictPolicy reports the policy for overwrites to resolvedPath. With
+// no resolver installed it returns the default compare-and-swap policy.
+func (s *Shell) WriteConflictPolicy(resolvedPath string) vfs.WriteConflictPolicy {
+	if s.conflictPolicyFn == nil {
+		return vfs.DefaultWriteConflictPolicy
+	}
+	return s.conflictPolicyFn(resolvedPath)
 }
 
 // --- CmdContext interface implementation ---
@@ -180,6 +225,13 @@ func (s *Shell) execCall(call *parser.CallExpr, w io.Writer, errW io.Writer, std
 	// commits it as a single atomic whole-object write. Nothing is committed
 	// unless the command succeeds (commit-on-success only — no half-files).
 	if call.Redirect != nil {
+		// A file redirect is a write; gate it at parse time (Part B) so a
+		// read-only session cannot use `>`/`>>` to mutate a docset.
+		if !s.ActionAllowed(cmds.ActionWrite) {
+			target := s.expandWord(call.Redirect.Target)
+			fmt.Fprintf(errW, "redirect: %s: read-only filesystem\n", target)
+			return 1
+		}
 		var buf bytes.Buffer
 		code := s.execCallInner(call, &buf, errW, stdin)
 		if code != 0 {
@@ -238,6 +290,14 @@ func (s *Shell) execCallInner(call *parser.CallExpr, w io.Writer, errW io.Writer
 	}
 
 	if fn, ok := cmds.Registry[cmdName]; ok {
+		// Capability gating (Part B): a command whose action the session is
+		// not allowed to perform is hidden — it reports "command not found"
+		// so the restricted surface is not even discoverable.
+		if !s.ActionAllowed(cmds.InvocationAction(cmdName, cmdArgs)) {
+			fmt.Fprintf(errW, "%s: command not found\n", cmdName)
+			fmt.Fprintln(errW, "Type 'help' for available commands.")
+			return 127
+		}
 		return fn(s, cmdArgs, w, errW, stdin)
 	}
 

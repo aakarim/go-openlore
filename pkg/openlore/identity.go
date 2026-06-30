@@ -18,6 +18,7 @@ type Identity struct {
 	LoreName       string               // name of the lore spec this identity uses
 	PathAccess     []config.PathMapping // resolved path mappings
 	PublishDocsets []string             // writable docsets (nil = all in lore)
+	Capabilities   []string             // approval capabilities held (Part C)
 }
 
 // OnConnectFunc is called when a new SSH session is established.

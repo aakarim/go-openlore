@@ -41,6 +41,11 @@ const (
 	KindPreRead EventKind = "pre_read"
 	// KindPostWrite fires after a write has succeeded.
 	KindPostWrite EventKind = "post_write"
+	// KindApprovalPending fires when a human-gated write is recorded as a
+	// pending request (Part C). Used to notify the approver(s) — the targeted
+	// "approval needed" moment, distinct from the post_write fan-out that fires
+	// when the write later commits.
+	KindApprovalPending EventKind = "approval_pending"
 	// KindTopicRefreshed fires when a Worker run finishes for a content_hash.
 	// Used by `kb publish --wait` to unblock.
 	KindTopicRefreshed EventKind = "topic_refreshed"

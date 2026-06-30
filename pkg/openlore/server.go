@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
+	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
+	"github.com/aakarim/go-openlore/pkg/openlore/hooks"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -49,6 +52,17 @@ type Server struct {
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
 	sessionFSFn  SessionFSFn
+
+	// requests is the control-plane store for human-gated write requests
+	// (Part C). Served read-only at /requests.
+	requests *RequestStore
+
+	// bus is the storage-event bus. Write events (post_write) and approval
+	// events (approval_pending) fan out to configured shell hooks.
+	bus *eventbus.Bus
+
+	// jobs runs async external work (Part D), surfaced read-only at /jobs.
+	jobs *JobManager
 }
 
 // NewServer creates a new OpenLore SSH server.
@@ -71,7 +85,12 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		metrics: &metrics.Metrics{},
 		logger:  logger,
 		motd:    cfg.MOTD,
+		bus:     eventbus.New(logger),
 	}
+
+	// Wire configured shell hooks (post_write, approval_pending, …) onto the
+	// bus. Empty hook config is valid — nothing fires.
+	hooks.Subscribe(s.bus, hooks.Config{DataDir: cfg.DataDir, Hooks: cfg.Hooks}, nil, logger)
 
 	// Load auth config
 	if cfg.AuthFile != "" {
@@ -95,7 +114,7 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		// Register writable docsets for the publish command
 		for name, ds := range auth.Docsets {
 			if ds.PublishDir != "" {
-				cmds.RegisterPublishTarget(name, ds.PublishDir, ds.MaxPublishSize)
+				cmds.RegisterPublishTarget(name, ds.MaxPublishSize)
 			}
 		}
 	}
@@ -117,15 +136,33 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 
 	// Set up root directory
 	if rootDir != "" {
-		rootFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots)
+		rootFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots).WithBus(s.bus)
 		s.merge.SetRoot(rootFS)
 	}
 
 	// Set up additional folders. Each folder mount is itself a docset, so any
 	// non-root path within it is a valid Mkdir target (default boundary).
 	for _, folder := range cfg.Folders {
-		folderFS := NewDirFS(folder.Path, cfg.Files)
+		folderFS := NewDirFS(folder.Path, cfg.Files).WithBus(s.bus)
 		s.merge.Mount(folder.Name, folderFS)
+	}
+
+	// Control plane: the human-gated-write request store (Part C), served
+	// read-only at /requests. Opt-in via data_dir — without it, the approval
+	// control plane is absent (the embedded KB server, local `openlore .`).
+	// The mount is a system mount, so it is visible to every session regardless
+	// of lore; writes to it are denied (RequestsFS is not a WritableFS).
+	if cfg.DataDir != "" {
+		store, err := NewRequestStore(filepath.Join(cfg.DataDir, "requests"))
+		if err != nil {
+			return nil, fmt.Errorf("initializing request store: %w", err)
+		}
+		s.requests = store
+		s.merge.MountSystem("requests", NewRequestsFS(store))
+		// The approve/reject commands resolve requests by replaying the
+		// proposed write through the raw substrate (s.merge), bypassing
+		// per-session scope/approval wrappers — the approval is the authority.
+		cmds.Approvals = &approvalBackend{store: store, commitFS: s.merge}
 	}
 
 	// Enable the experimental writable substrate when the global lock is open.
@@ -135,6 +172,14 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 			return nil, fmt.Errorf("enabling writable mode (readonly=false): %w", err)
 		}
 		logger.Info("writable substrate enabled (readonly=false)")
+
+		// Async external work (Part D): the `spawn` command runs a command in a
+		// bounded goroutine and writes its stdout back through the captured
+		// scoped FS. Only meaningful when writes are possible. Jobs are in-memory
+		// (lost on restart) and surfaced read-only at /jobs.
+		s.jobs = NewJobManager(cfg.MaxJobs, hooks.ShellRunner{}, s.bus, logger)
+		cmds.Jobs = s.jobs
+		s.merge.MountSystem("jobs", NewJobsFS(s.jobs))
 	}
 
 	// Load skills
@@ -299,6 +344,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				id.LoreName = ident.Lore
 				id.PathAccess = s.resolveLorePathAccess(ident.Lore)
 				id.PublishDocsets = ident.Publish
+				id.Capabilities = ident.Capabilities
 				matched = true
 				break
 			}
@@ -366,6 +412,82 @@ func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
 	return mappings
 }
 
+// writableDocsetRoots resolves the docset roots an identity may write to
+// (Part B). It uses the identity's explicit publish list, falling back to every
+// docset in its lore when no explicit publish scope is set (the admin /
+// no-publish case). Docsets flagged readonly are excluded — a per-docset lock
+// can only further restrict. Returns nil for an unrecognized identity, so
+// anonymous sessions are read-only.
+func (s *Server) writableDocsetRoots(id Identity) []string {
+	if s.auth == nil || id.IdentityName == "" {
+		return nil
+	}
+	names := id.PublishDocsets
+	if len(names) == 0 {
+		names = s.auth.Lore[id.LoreName]
+	}
+	var roots []string
+	for _, name := range names {
+		ds, ok := s.auth.Docsets[name]
+		if !ok {
+			continue
+		}
+		if ds.Readonly != nil && *ds.Readonly {
+			continue // per-docset lock excludes it from the writable scope
+		}
+		for _, pm := range ds.Paths {
+			display := pm.Display
+			if display == "" {
+				display = pm.Source
+			}
+			roots = append(roots, display)
+		}
+	}
+	return roots
+}
+
+// writeConflictPolicy resolves the policy governing whole-file overwrites to
+// virtual path p. A per-docset override (DocsetSpec.WriteConflictPolicy) wins
+// for paths inside that docset; otherwise the global default applies. An
+// invalid per-docset value is ignored in favor of the global default.
+func (s *Server) writeConflictPolicy(p string) vfs.WriteConflictPolicy {
+	global := s.config.WriteConflictPolicy
+	if global == "" {
+		global = vfs.DefaultWriteConflictPolicy
+	}
+	if s.auth == nil {
+		return global
+	}
+	clean := vfs.CleanPath(p)
+	for _, ds := range s.auth.Docsets {
+		if ds.WriteConflictPolicy == "" {
+			continue
+		}
+		for _, pm := range ds.Paths {
+			display := pm.Display
+			if display == "" {
+				display = pm.Source
+			}
+			if pathWithinRoot(vfs.CleanPath(display), clean) {
+				if parsed, err := vfs.ParseWriteConflictPolicy(ds.WriteConflictPolicy); err == nil {
+					return parsed
+				}
+				return global
+			}
+		}
+	}
+	return global
+}
+
+// pathWithinRoot reports whether p is the docset root itself or sits beneath it.
+// A root of "/" contains every path.
+func pathWithinRoot(root, p string) bool {
+	if root == "/" {
+		return true
+	}
+	return p == root || strings.HasPrefix(p, root+"/")
+}
+
 func (s *Server) sftpSubsystem(sess ssh.Session) {
 	handler := NewSFTPHandler(s.fs)
 	server := sftp.NewRequestServer(sess, sftp.Handlers{
@@ -425,6 +547,19 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 				sessionFS = s.merge.FilteredView(allowed)
 			}
 		}
+		// Part C approval gating: writes to gated paths become pending requests
+		// instead of committing. This wrapper sits *inside* scopedWriteFS so an
+		// out-of-scope write is hard-denied before it can become a request.
+		if s.auth != nil && s.requests != nil && s.hasApprovalRules() {
+			sessionFS = newApprovalFS(sessionFS, s.requests, s.requiresApproval, id.IdentityName, s.bus)
+		}
+		// Part B per-identity write isolation: confine this session's writes to
+		// the docset roots it may publish to, so two agents sharing a lore can't
+		// write each other's docsets. Anonymous/unrecognized identities get no
+		// writable roots (fully read-only). No-op without an auth config.
+		if s.auth != nil {
+			sessionFS = newScopedWriteFS(sessionFS, s.writableDocsetRoots(id))
+		}
 		if s.sessionFSFn != nil {
 			sessionFS = s.sessionFSFn(id, sessionFS)
 		}
@@ -433,10 +568,41 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 		if s.config.DefaultCwd != "" {
 			shell.SetCwd(s.config.DefaultCwd)
 		}
+		// Per-docset / global write-conflict policy for overwrite verbs.
+		shell.SetConflictPolicyFn(s.writeConflictPolicy)
+
+		// Capability gating (Part B). Only applies when an auth config is
+		// present — without one (local `openlore .` or an embedded KB server
+		// that does its own scoping) the shell stays unrestricted. With auth,
+		// an unrecognized/anonymous identity is read-only; a recognized
+		// identity may write and publish within its docsets.
+		if s.auth != nil {
+			if id.IdentityName != "" {
+				allowed := []cmds.Action{cmds.ActionWrite, cmds.ActionPublish}
+				// An identity holding any approval capability may also see and
+				// use approve/reject (the exact capability is checked per
+				// request when the command runs).
+				if len(id.Capabilities) > 0 {
+					allowed = append(allowed, cmds.ActionApprove)
+				}
+				// spawn runs an external command as the OpenLore service
+				// user, so it's gated on an explicit `spawn` capability
+				// (Part D) — never granted to ordinary writers.
+				if hasCapability(id.Capabilities, "spawn") {
+					allowed = append(allowed, cmds.ActionSpawn)
+				}
+				shell.SetAllowedActions(allowed)
+			} else {
+				shell.SetAllowedActions(nil) // read-only (ActionRead implied)
+			}
+		}
 
 		// Set identity info as environment variables
 		if id.IdentityName != "" {
 			shell.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
+		}
+		if len(id.Capabilities) > 0 {
+			shell.SetEnv("OPENLORE_CAPABILITIES", strings.Join(id.Capabilities, ","))
 		}
 		// Expose the SSH user as the agent ID so commands like `kb` and
 		// the writable VFS can scope operations per-agent.
@@ -670,6 +836,13 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.passkeys != nil {
 		s.passkeys.Shutdown()
+	}
+	// Give in-flight async jobs (Part D) a few seconds to commit their
+	// write-back before we exit, shrinking the loss window.
+	if s.jobs != nil {
+		if !s.jobs.Drain(jobDrainTimeout) {
+			s.logger.Warn("shutdown: async jobs still running after drain timeout", "timeout", jobDrainTimeout)
+		}
 	}
 	if s.srv == nil {
 		return nil

@@ -7,6 +7,14 @@ metrics_port: 0
 default_cwd: /
 auth_file: ./lore.json
 
+# Whole-file overwrite conflict policy: hash (compare-and-swap, default) or
+# last_write_wins. Overridable per docset in lore.json.
+write_conflict_policy: hash
+
+# Max concurrent async `spawn` jobs (granted only to identities with the "spawn"
+# capability). In-flight jobs are in-memory and lost on restart.
+max_jobs: 8
+
 mcp:
   enabled: true
   path: /mcp

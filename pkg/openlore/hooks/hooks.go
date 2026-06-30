@@ -163,6 +163,11 @@ func Subscribe(bus *eventbus.Bus, cfg Config, runner Runner, logger *slog.Logger
 		bus.Subscribe(s)
 		out = append(out, s)
 	}
+	for i, h := range cfg.Hooks.ApprovalPending {
+		s := NewSubscriber(fmt.Sprintf("approval_pending[%d]", i), eventbus.KindApprovalPending, h, cfg.DataDir, runner, logger)
+		bus.Subscribe(s)
+		out = append(out, s)
+	}
 	return out
 }
 

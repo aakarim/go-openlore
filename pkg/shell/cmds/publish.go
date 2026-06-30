@@ -1,19 +1,19 @@
 package cmds
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // PublishTarget is a writable docset: its logical name (the first path
-// segment used in `publish /<name>/<file>`) mapped to an on-disk directory.
+// segment used in `publish /<name>/<file>`) and the per-docset size cap.
 type PublishTarget struct {
 	Name        string
-	DiskDir     string
 	MaxFileSize int64
 }
 
@@ -21,18 +21,16 @@ type PublishTarget struct {
 const defaultMaxPublishSize int64 = 2_621_440 // 2.5 MiB
 
 // Package-level publish state. Populated by the server at startup via
-// RegisterPublishTarget and PublishBaseURL. See docs/openlore-cli-wart-audit.md
-// (W-01/W-02) for the planned migration onto Shell/CmdContext.
+// RegisterPublishTarget and PublishBaseURL.
 var (
 	PublishTargets []PublishTarget
 	PublishBaseURL string
 )
 
 // RegisterPublishTarget registers a writable docset. Append-only.
-func RegisterPublishTarget(name, diskDir string, maxFileSize int64) {
+func RegisterPublishTarget(name string, maxFileSize int64) {
 	PublishTargets = append(PublishTargets, PublishTarget{
 		Name:        name,
-		DiskDir:     diskDir,
 		MaxFileSize: maxFileSize,
 	})
 }
@@ -47,10 +45,14 @@ func findPublishTarget(name string) (PublishTarget, bool) {
 	return PublishTarget{}, false
 }
 
-// CmdPublish writes stdin to a file inside a writable docset. The session's
-// writable docsets are supplied via the OPENLORE_DOCSETS env var (set by the
-// server from the identity's `publish` list). Writes are whole-file: the
-// command buffers stdin and writes once.
+// CmdPublish writes stdin to a file inside a writable docset. The commit goes
+// through the session filesystem (`WriteFile`), so it inherits the same
+// per-identity write scoping, atomic CAS, and (later) approval gating as every
+// other write verb — there is no longer a separate direct-to-disk path. The
+// session's writable docsets are advertised via the OPENLORE_DOCSETS env var
+// (set by the server from the identity's `publish` list) and used here only for
+// the usage listing and per-docset size cap; the filesystem is the authority on
+// whether the write is actually permitted.
 func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	// Resolve the session's writable docsets: the intersection of the
 	// identity's OPENLORE_DOCSETS and the registered publish targets.
@@ -107,14 +109,13 @@ func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdi
 		fmt.Fprintf(errW, "  e.g. publish /%s/my-file.md\n", docset)
 		return 1
 	}
-	rel := segs[1]
 
 	maxSize := target.MaxFileSize
 	if maxSize <= 0 {
 		maxSize = defaultMaxPublishSize
 	}
 
-	// Buffer the whole object (bounded), then commit once.
+	// Buffer the whole object (bounded), then commit once through the VFS.
 	data, err := io.ReadAll(io.LimitReader(stdin, maxSize+1))
 	if err != nil {
 		fmt.Fprintf(errW, "publish: %s\n", err)
@@ -125,13 +126,24 @@ func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdi
 		return 1
 	}
 
-	dst := filepath.Join(target.DiskDir, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		fmt.Fprintf(errW, "publish: %s\n", err)
-		return 1
-	}
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
-		fmt.Fprintf(errW, "publish: %s\n", err)
+	if _, err := WriteFile(ctx, p, data, false); err != nil {
+		var pe *vfs.PendingApprovalError
+		if errors.As(err, &pe) {
+			// Not a failure: the publish was accepted as a pending request.
+			fmt.Fprintf(w, "Pending approval: %s (requires %s)\n", pe.RequestID, pe.Capability)
+			fmt.Fprintf(w, "Track at /requests/%s\n", pe.RequestID)
+			return 0
+		}
+		var pce *vfs.PreconditionError
+		if errors.As(err, &pce) {
+			fmt.Fprintf(errW, "publish: %s changed concurrently — re-read and retry\n", p)
+			return 1
+		}
+		if errors.Is(err, vfs.ErrReadOnly) {
+			fmt.Fprintf(errW, "publish: no access to %s\n", p)
+		} else {
+			fmt.Fprintf(errW, "publish: %s\n", err)
+		}
 		return 1
 	}
 

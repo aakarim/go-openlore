@@ -352,11 +352,18 @@ func (d *DirFS) ReadFile(p string) ([]byte, error) {
 type MergeFS struct {
 	root   vfs.FileSystem
 	mounts map[string]vfs.FileSystem
+	// system marks mount names that are control-plane (e.g. "requests") rather
+	// than lore docsets. System mounts are always preserved across
+	// FilteredView, so every session can see them regardless of its lore.
+	system map[string]bool
 }
 
 // NewMergeFS creates an empty MergeFS.
 func NewMergeFS() *MergeFS {
-	return &MergeFS{mounts: make(map[string]vfs.FileSystem)}
+	return &MergeFS{
+		mounts: make(map[string]vfs.FileSystem),
+		system: make(map[string]bool),
+	}
 }
 
 // SetRoot sets the root filesystem that serves content at "/".
@@ -369,8 +376,16 @@ func (m *MergeFS) Mount(name string, fs vfs.FileSystem) {
 	m.mounts[name] = fs
 }
 
-// FilteredView returns a new MergeFS that only includes the specified mount names.
-// The root filesystem is always included. If allowedMounts is nil, returns the original.
+// MountSystem adds a control-plane mount that is preserved across FilteredView
+// for every session (it is not a lore docset). Used for /requests.
+func (m *MergeFS) MountSystem(name string, fs vfs.FileSystem) {
+	m.mounts[name] = fs
+	m.system[name] = true
+}
+
+// FilteredView returns a new MergeFS that only includes the specified mount
+// names plus all system mounts. The root filesystem is always included. If
+// allowedMounts is nil, returns the original.
 func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
 	if allowedMounts == nil {
 		return m
@@ -378,9 +393,10 @@ func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
 	filtered := &MergeFS{
 		root:   m.root,
 		mounts: make(map[string]vfs.FileSystem),
+		system: m.system,
 	}
 	for name, fs := range m.mounts {
-		if allowedMounts[name] {
+		if allowedMounts[name] || m.system[name] {
 			filtered.mounts[name] = fs
 		}
 	}

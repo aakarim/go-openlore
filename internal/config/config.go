@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/aakarim/go-openlore/pkg/openlore/hooks"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +24,9 @@ type Config struct {
 	MOTD            string
 	AuthFile        string
 	SkillsDir       string
+	// DataDir is the server's writable control-plane data root (approval
+	// requests, etc.). Distinct from docset content. Defaults to ./.openlore.
+	DataDir         string
 	HTTPPort        int
 	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
 	// MCPEnabled controls whether the always-on MCP-over-HTTP endpoint runs.
@@ -35,6 +40,7 @@ type Config struct {
 	Files        FilesConfig
 	Folders      []FolderConfig
 	Passkeys     PasskeysConfig
+	Hooks        hooks.HookSet // event hooks (post_write, approval_pending, …)
 	Logger       *slog.Logger
 
 	// Readonly is the global write lock. Default true: the substrate is a
@@ -43,6 +49,15 @@ type Config struct {
 	// startup). Global readonly is a hard physical lock — a per-docset
 	// readonly=false cannot loosen it.
 	Readonly bool
+
+	// WriteConflictPolicy is the global default policy for whole-file overwrite
+	// verbs (`>`, tee, sed -i, publish). Default "hash" (compare-and-swap); set
+	// "last_write_wins" for unconditional overwrites. A per-docset override
+	// (DocsetSpec.WriteConflictPolicy) takes precedence for that docset.
+	WriteConflictPolicy vfs.WriteConflictPolicy
+
+	// MaxJobs bounds concurrent async `spawn` jobs (Part D). Default 8.
+	MaxJobs int
 
 	// Track sources for conflict detection.
 	configFileLoaded   bool
@@ -95,6 +110,28 @@ type DocsetSpec struct {
 	// writes to this docset even when the global lock is open; setting it false
 	// is meaningless when the global lock is closed.
 	Readonly *bool `json:"readonly,omitempty"`
+
+	// WriteConflictPolicy overrides the global write-conflict policy for writes
+	// to this docset. "" inherits Config.WriteConflictPolicy; "hash" forces
+	// compare-and-swap overwrites; "last_write_wins" forces unconditional ones.
+	WriteConflictPolicy string `json:"write_conflict_policy,omitempty"`
+
+	// RequiresApproval lists the human-gating rules for this docset (Part C). A
+	// write whose target matches a rule's Paths is not committed; instead a
+	// pending request is recorded and an identity holding the rule's Capability
+	// must approve it. Empty means no approval gating for this docset.
+	RequiresApproval []ApprovalRule `json:"requires_approval,omitempty"`
+}
+
+// ApprovalRule gates writes to a set of virtual paths behind a capability.
+type ApprovalRule struct {
+	// Paths are absolute virtual-path globs. A trailing "/**" matches the
+	// subtree; "*" within a segment uses shell glob semantics; otherwise the
+	// match is exact.
+	Paths []string `json:"paths"`
+	// Capability is the approval capability an identity must hold to approve a
+	// matching request, e.g. "approve@oncall".
+	Capability string `json:"capability"`
 }
 
 // PathMapping represents a path entry — either a simple string path or a
@@ -136,6 +173,10 @@ type AuthIdentity struct {
 	PublicKey string   `json:"public_key"`
 	Lore      string   `json:"lore"`
 	Publish   []string `json:"publish,omitempty"` // writable docsets; empty = all in lore
+	// Capabilities are the approval capabilities this identity holds (Part C),
+	// e.g. "approve@oncall". Used to authorize `approve`/`reject` of pending
+	// requests whose required capability matches.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // Option is a functional option for configuring the server.
@@ -143,26 +184,30 @@ type Option func(*Config) error
 
 // fileConfig mirrors Config for YAML deserialization.
 type fileConfig struct {
-	ConfigVersion   string         `yaml:"version"`
-	Port            int            `yaml:"port"`
-	MetricsPort     int            `yaml:"metrics_port"`
-	HostKeyPath     string         `yaml:"host_key_path"`
-	MOTD            string         `yaml:"motd"`
-	MOTDFile        string         `yaml:"motd_file"`
-	AuthFile        string         `yaml:"auth_file"`
-	SkillsDir       string         `yaml:"skills_dir"`
-	HTTPPort        int            `yaml:"http_port"`
-	ExternalSSHPort int            `yaml:"external_ssh_port"`
-	MCP             *mcpYAML       `yaml:"mcp"`
-	TLSCert         string         `yaml:"tls_cert"`
-	TLSKey          string         `yaml:"tls_key"`
-	CAKeysFile      string         `yaml:"ca_keys_file"`
-	HostCertFile    string         `yaml:"host_cert_file"`
-	DefaultCwd      string         `yaml:"default_cwd"`
-	Files           *filesYAML     `yaml:"files"`
-	Folders         []FolderConfig `yaml:"folders"`
-	Passkeys        *passkeysYAML  `yaml:"passkeys"`
-	Readonly        *bool          `yaml:"readonly"`
+	ConfigVersion       string         `yaml:"version"`
+	Port                int            `yaml:"port"`
+	MetricsPort         int            `yaml:"metrics_port"`
+	HostKeyPath         string         `yaml:"host_key_path"`
+	MOTD                string         `yaml:"motd"`
+	MOTDFile            string         `yaml:"motd_file"`
+	AuthFile            string         `yaml:"auth_file"`
+	SkillsDir           string         `yaml:"skills_dir"`
+	DataDir             string         `yaml:"data_dir"`
+	HTTPPort            int            `yaml:"http_port"`
+	ExternalSSHPort     int            `yaml:"external_ssh_port"`
+	MCP                 *mcpYAML       `yaml:"mcp"`
+	TLSCert             string         `yaml:"tls_cert"`
+	TLSKey              string         `yaml:"tls_key"`
+	CAKeysFile          string         `yaml:"ca_keys_file"`
+	HostCertFile        string         `yaml:"host_cert_file"`
+	DefaultCwd          string         `yaml:"default_cwd"`
+	Files               *filesYAML     `yaml:"files"`
+	Folders             []FolderConfig `yaml:"folders"`
+	Passkeys            *passkeysYAML  `yaml:"passkeys"`
+	Hooks               *hooks.HookSet `yaml:"hooks"`
+	Readonly            *bool          `yaml:"readonly"`
+	WriteConflictPolicy string         `yaml:"write_conflict_policy"`
+	MaxJobs             int            `yaml:"max_jobs"`
 }
 
 type mcpYAML struct {
@@ -190,16 +235,18 @@ type filesYAML struct {
 // Returns an error if both a config file and embedded config are used.
 func New(opts ...Option) (Config, error) {
 	cfg := Config{
-		Port:            2222,
-		HTTPPort:        8080,
-		MetricsPort:     3000,
-		MCPEnabled:      true,
-		MCPPath:         "/mcp",
-		HostKeyPath:     ".ssh/openlore_ed25519",
-		AllowKeyless:    true,
-		UnknownIdentity: "allow",
-		DefaultCwd:      "/openlore",
-		Readonly:        true, // safe default: read-only substrate
+		Port:                2222,
+		HTTPPort:            8080,
+		MetricsPort:         3000,
+		MCPEnabled:          true,
+		MCPPath:             "/mcp",
+		HostKeyPath:         ".ssh/openlore_ed25519",
+		AllowKeyless:        true,
+		UnknownIdentity:     "allow",
+		DefaultCwd:          "/openlore",
+		Readonly:            true,                           // safe default: read-only substrate
+		WriteConflictPolicy: vfs.DefaultWriteConflictPolicy, // "hash": overwrites are compare-and-swap
+		MaxJobs:             8,                              // bound concurrent async spawn jobs
 		Files: FilesConfig{
 			Allowed: []string{
 				"*.md", "*.markdown", "*.txt",
@@ -274,6 +321,9 @@ func WithConfigFile(path string) Option {
 		if fc.SkillsDir != "" {
 			cfg.SkillsDir = fc.SkillsDir
 		}
+		if fc.DataDir != "" {
+			cfg.DataDir = fc.DataDir
+		}
 		if fc.HTTPPort != 0 {
 			cfg.HTTPPort = fc.HTTPPort
 		}
@@ -309,8 +359,21 @@ func WithConfigFile(path string) Option {
 		if len(fc.Folders) > 0 {
 			cfg.Folders = fc.Folders
 		}
+		if fc.Hooks != nil {
+			cfg.Hooks = *fc.Hooks
+		}
 		if fc.Readonly != nil {
 			cfg.Readonly = *fc.Readonly
+		}
+		if fc.WriteConflictPolicy != "" {
+			p, err := vfs.ParseWriteConflictPolicy(fc.WriteConflictPolicy)
+			if err != nil {
+				return err
+			}
+			cfg.WriteConflictPolicy = p
+		}
+		if fc.MaxJobs > 0 {
+			cfg.MaxJobs = fc.MaxJobs
 		}
 		applyPasskeysConfig(cfg, fc.Passkeys)
 		applyMCPConfig(cfg, fc.MCP)
@@ -358,6 +421,9 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if fc.SkillsDir != "" {
 				cfg.SkillsDir = fc.SkillsDir
 			}
+			if fc.DataDir != "" {
+				cfg.DataDir = fc.DataDir
+			}
 			if fc.HTTPPort != 0 {
 				cfg.HTTPPort = fc.HTTPPort
 			}
@@ -393,8 +459,21 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if len(fc.Folders) > 0 {
 				cfg.Folders = fc.Folders
 			}
+			if fc.Hooks != nil {
+				cfg.Hooks = *fc.Hooks
+			}
 			if fc.Readonly != nil {
 				cfg.Readonly = *fc.Readonly
+			}
+			if fc.WriteConflictPolicy != "" {
+				p, err := vfs.ParseWriteConflictPolicy(fc.WriteConflictPolicy)
+				if err != nil {
+					return err
+				}
+				cfg.WriteConflictPolicy = p
+			}
+			if fc.MaxJobs > 0 {
+				cfg.MaxJobs = fc.MaxJobs
 			}
 			applyPasskeysConfig(cfg, fc.Passkeys)
 			applyMCPConfig(cfg, fc.MCP)
@@ -430,6 +509,20 @@ func WithMetricsPort(port int) Option {
 func WithReadonly(readonly bool) Option {
 	return func(cfg *Config) error {
 		cfg.Readonly = readonly
+		return nil
+	}
+}
+
+// WithWriteConflictPolicy sets the global default write-conflict policy for
+// whole-file overwrite verbs. Empty resolves to the default (hash). Invalid
+// values are rejected.
+func WithWriteConflictPolicy(policy string) Option {
+	return func(cfg *Config) error {
+		p, err := vfs.ParseWriteConflictPolicy(policy)
+		if err != nil {
+			return err
+		}
+		cfg.WriteConflictPolicy = p
 		return nil
 	}
 }
@@ -490,6 +583,14 @@ func WithAuthFile(path string) Option {
 func WithSkillsDir(dir string) Option {
 	return func(cfg *Config) error {
 		cfg.SkillsDir = dir
+		return nil
+	}
+}
+
+// WithDataDir sets the server's writable control-plane data root.
+func WithDataDir(dir string) Option {
+	return func(cfg *Config) error {
+		cfg.DataDir = dir
 		return nil
 	}
 }

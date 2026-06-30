@@ -41,6 +41,44 @@ type FileSystem interface {
 	ReadFile(path string) ([]byte, error)
 }
 
+// WriteConflictPolicy selects how a whole-file overwrite (the `>`, tee, sed -i
+// and publish verbs) defends against concurrent writers. It does not affect
+// append (`>>`) or patch, which are always compare-and-swap by construction.
+type WriteConflictPolicy string
+
+const (
+	// PolicyHash (the default) makes overwrites compare-and-swap: the write
+	// carries an IfMatch precondition on the base the caller read, so a
+	// concurrent change is rejected with a PreconditionError instead of being
+	// silently clobbered. For a read-modify-write verb (sed -i) the base is the
+	// content it transformed, giving true optimistic concurrency; for a blind
+	// redirect the base is read at command time, so the guarantee narrows to
+	// the command's own read→write window.
+	PolicyHash WriteConflictPolicy = "hash"
+
+	// PolicyLastWriteWins makes overwrites unconditional (the zero WriteOpts):
+	// atomic, but the last writer silently wins. Opt-in per docset or globally.
+	PolicyLastWriteWins WriteConflictPolicy = "last_write_wins"
+)
+
+// DefaultWriteConflictPolicy is the policy applied when none is configured.
+const DefaultWriteConflictPolicy = PolicyHash
+
+// ParseWriteConflictPolicy validates and normalizes a policy string. An empty
+// string resolves to the default (hash). Unknown values are rejected.
+func ParseWriteConflictPolicy(s string) (WriteConflictPolicy, error) {
+	switch WriteConflictPolicy(s) {
+	case "":
+		return DefaultWriteConflictPolicy, nil
+	case PolicyHash:
+		return PolicyHash, nil
+	case PolicyLastWriteWins:
+		return PolicyLastWriteWins, nil
+	default:
+		return "", fmt.Errorf("invalid write_conflict_policy %q (want %q or %q)", s, PolicyHash, PolicyLastWriteWins)
+	}
+}
+
 // WriteOpts carries the precondition contract for an atomic write. The zero
 // value means "unconditional overwrite" (last-write-wins, but still atomic).
 //
@@ -91,6 +129,15 @@ type WritableFS interface {
 	Mkdir(name string) error
 }
 
+// WriteScopeFS is optionally implemented by a session filesystem that confines
+// writes to a subset of paths. CanWrite reports whether a write to path would be
+// permitted by the session's scope, without performing one — used for fail-fast
+// checks (e.g. `spawn` validating its target before scheduling a job). It says
+// nothing about content preconditions or approval gating, only scope.
+type WriteScopeFS interface {
+	CanWrite(path string) bool
+}
+
 // ErrReadOnly is returned by mutating operations when the substrate is in
 // read-only mode.
 var ErrReadOnly = fmt.Errorf("read-only filesystem")
@@ -108,6 +155,21 @@ func (e *PreconditionError) Error() string {
 		return fmt.Sprintf("precondition failed: %s does not exist; re-read and retry", e.Path)
 	}
 	return fmt.Sprintf("precondition failed: %s current hash %s; re-read and retry", e.Path, e.Current)
+}
+
+// PendingApprovalError is returned by a mutating operation that was not
+// committed because its target requires a human approval (Part C). The write
+// has been recorded as a pending request (RequestID) that an approver holding
+// Capability can approve or reject. It is not a failure — the proposal was
+// accepted — so callers should report it informationally, not as an error.
+type PendingApprovalError struct {
+	RequestID  string
+	Capability string
+	Target     string
+}
+
+func (e *PendingApprovalError) Error() string {
+	return fmt.Sprintf("write to %s pending approval as %s (requires %s)", e.Target, e.RequestID, e.Capability)
 }
 
 // WalkDir walks the filesystem tree rooted at root, calling fn for each file or directory.

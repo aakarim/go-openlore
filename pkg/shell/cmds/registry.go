@@ -91,6 +91,11 @@ func init() {
 	Register("patch", CmdPatch)
 	// publishing
 	Register("publish", CmdPublish)
+	// approvals (human-gated writes)
+	Register("approve", CmdApprove)
+	Register("reject", CmdReject)
+	// async external work (Part D)
+	Register("spawn", CmdSpawn)
 	// identity
 	Register("whoami", CmdWhoami)
 }

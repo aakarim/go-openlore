@@ -51,14 +51,18 @@ func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io
 		}
 		code := 0
 		for _, f := range files {
-			lines, c := ReadInputLines(ctx, []string{f}, nil, errW, "sed")
-			if c != 0 {
-				code = c
+			// Read the raw base bytes so the commit can compare-and-swap
+			// against exactly what we transformed (true CAS under hash policy).
+			orig, rerr := ctx.FS().ReadFile(ctx.Resolve(f))
+			if rerr != nil {
+				fmt.Fprintf(errW, "sed: %s: %s\n", f, rerr)
+				code = 1
 				continue
 			}
+			lines := splitLinesForSed(orig)
 			var buf bytes.Buffer
 			applySedCommands(cmds, lines, quiet, &buf)
-			if c := WriteFileMsg(ctx, errW, "sed", f, buf.Bytes(), false); c != 0 {
+			if c := WriteFileCASMsg(ctx, errW, "sed", f, buf.Bytes(), orig); c != 0 {
 				code = c
 			}
 		}
@@ -72,6 +76,20 @@ func CmdSed(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io
 
 	applySedCommands(cmds, lines, quiet, w)
 	return 0
+}
+
+// splitLinesForSed splits raw file bytes into lines using the same convention
+// as ReadInputLines: a single trailing newline is dropped, and empty content
+// yields no lines.
+func splitLinesForSed(content []byte) []string {
+	text := string(content)
+	if strings.HasSuffix(text, "\n") {
+		text = text[:len(text)-1]
+	}
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
 
 // applySedCommands runs the parsed sed commands over lines, writing the result

@@ -51,7 +51,6 @@ func CmdHelp(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 	fmt.Fprintln(w, "  date [-u] [+FORMAT]                       Display date/time")
 	fmt.Fprintln(w, "  basename <path> [suffix]                  Strip directory")
 	fmt.Fprintln(w, "  dirname <path>                            Strip last component")
-	fmt.Fprintln(w, "  tee                                       Pass stdin to stdout")
 	fmt.Fprintln(w, "  base64 [-d]                               Base64 encode/decode")
 	fmt.Fprintln(w, "  md5sum/sha1sum/sha256sum [-c] [file]      Compute checksums")
 	fmt.Fprintln(w, "  expr <expression>                         Evaluate expression")
@@ -61,9 +60,36 @@ func CmdHelp(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 	fmt.Fprintln(w, "  whoami / hostname                         Print user/host info")
 	fmt.Fprintln(w, "  true / false                              Exit with 0 / 1")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "PUBLISHING")
-	fmt.Fprintln(w, "  publish <docset> <path>                  Publish content from stdin")
-	fmt.Fprintln(w, "")
+	// WRITES and PUBLISHING are shown only when the session may use them
+	// (Part B capability gating). A read-only session never sees this surface.
+	if ctx.ActionAllowed(ActionWrite) {
+		fmt.Fprintln(w, "WRITES")
+		fmt.Fprintln(w, "  write [--if-match H|--if-none-match] <path>  Atomic write from stdin")
+		fmt.Fprintln(w, "  patch <file>                             Apply a unified diff (atomic)")
+		fmt.Fprintln(w, "  tee <file>                               Pass stdin to stdout and a file")
+		fmt.Fprintln(w, "  sed -i 's/a/b/' <file>                   Edit a file in place")
+		fmt.Fprintln(w, "  cmd > file  /  cmd >> file               Redirect output to a file")
+		fmt.Fprintln(w, "")
+	}
+	if ctx.ActionAllowed(ActionPublish) {
+		fmt.Fprintln(w, "PUBLISHING")
+		fmt.Fprintln(w, "  publish <docset> <path>                  Publish content from stdin")
+		fmt.Fprintln(w, "")
+	}
+	if ctx.ActionAllowed(ActionApprove) {
+		fmt.Fprintln(w, "APPROVALS")
+		fmt.Fprintln(w, "  approve <request-id>                     Approve a pending write (commits it)")
+		fmt.Fprintln(w, "  reject <request-id>                      Reject a pending write")
+		fmt.Fprintln(w, "  cat /requests/<id>                       Review a pending request + diff")
+		fmt.Fprintln(w, "")
+	}
+	if ctx.ActionAllowed(ActionSpawn) {
+		fmt.Fprintln(w, "ASYNC EXTERNAL WORK")
+		fmt.Fprintln(w, "  spawn --writes <path> [--append] -- <cmd...>  Run a command async; write its output back")
+		fmt.Fprintln(w, "  cat /jobs/<id>                           Check a spawned job's state")
+		fmt.Fprintln(w, "  ls /jobs                                 List spawned jobs")
+		fmt.Fprintln(w, "")
+	}
 	fmt.Fprintln(w, "NAVIGATION & SHELL")
 	fmt.Fprintln(w, "  cd <path>                                Change directory")
 	fmt.Fprintln(w, "  pwd                                      Print working directory")

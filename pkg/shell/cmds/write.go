@@ -13,13 +13,38 @@ import (
 // maxAppendRetries bounds the compare-and-swap loop for atomic appends.
 const maxAppendRetries = 64
 
+// overwriteOpts builds the precondition for a whole-file overwrite to resolved
+// under the session's write-conflict policy. base is the content the caller
+// treats as the write's base; baseExists is whether that base is a real prior
+// version (false => create-only). Under PolicyLastWriteWins the write is
+// unconditional; under PolicyHash it is compare-and-swap against base.
+func overwriteOpts(ctx CmdContext, resolved string, base []byte, baseExists bool) vfs.WriteOpts {
+	if ctx.WriteConflictPolicy(resolved) == vfs.PolicyLastWriteWins {
+		return vfs.WriteOpts{}
+	}
+	if !baseExists {
+		return vfs.WriteOpts{IfNoneMatch: true}
+	}
+	h := sha256.Sum256(base)
+	hexStr := hex.EncodeToString(h[:])
+	return vfs.WriteOpts{IfMatch: &hexStr}
+}
+
 // WriteFile commits data to path through the writable filesystem as a single
 // atomic whole-object operation. It is the one write seam shared by every
-// write verb (`>`, `>>`, tee, patch, sed -i): there is no streaming.
+// blind write verb (`>`, `>>`, tee, publish): there is no streaming.
 //
-// When appendMode is false it overwrites unconditionally (last-write-wins, but
-// atomic). When appendMode is true it runs a read-modify-write CAS loop so
-// concurrent appends never clobber each other.
+// When appendMode is false it performs a whole-file overwrite governed by the
+// session's write-conflict policy: under "hash" (the default) it is a
+// compare-and-swap against the content read at command time, so a concurrent
+// change surfaces a vfs.PreconditionError; under "last_write_wins" it is an
+// unconditional atomic overwrite. When appendMode is true it runs a
+// read-modify-write CAS loop so concurrent appends never clobber each other,
+// regardless of policy.
+//
+// A read-modify-write verb that already holds the base it transformed (sed -i)
+// should call WriteFileCAS instead, so the precondition is the true base rather
+// than a re-read.
 //
 // It returns vfs.ErrReadOnly when the filesystem is read-only (the hard error
 // surfaced to the agent), so callers can detect and message it.
@@ -31,7 +56,12 @@ func WriteFile(ctx CmdContext, p string, data []byte, appendMode bool) (string, 
 	resolved := ctx.Resolve(p)
 
 	if !appendMode {
-		return wfs.WriteFileAtomic(resolved, data, vfs.WriteOpts{})
+		if ctx.WriteConflictPolicy(resolved) == vfs.PolicyLastWriteWins {
+			return wfs.WriteFileAtomic(resolved, data, vfs.WriteOpts{})
+		}
+		// hash policy: capture the current content as the CAS base.
+		cur, readErr := ctx.FS().ReadFile(resolved)
+		return wfs.WriteFileAtomic(resolved, data, overwriteOpts(ctx, resolved, cur, readErr == nil))
 	}
 
 	// Atomic append: read current content, append, commit-if-unchanged, retry.
@@ -65,17 +95,55 @@ func WriteFile(ctx CmdContext, p string, data []byte, appendMode bool) (string, 
 	return "", fmt.Errorf("append: too much write contention on %s", p)
 }
 
+// WriteFileCAS commits a whole-file overwrite where the caller already holds
+// the base content it transformed (a read-modify-write verb such as sed -i).
+// Under "hash" policy the write is a true compare-and-swap against base, so a
+// concurrent change since base was read surfaces a vfs.PreconditionError rather
+// than silently clobbering it; under "last_write_wins" it is unconditional.
+func WriteFileCAS(ctx CmdContext, p string, data []byte, base []byte) (string, error) {
+	wfs, ok := ctx.FS().(vfs.WritableFS)
+	if !ok {
+		return "", vfs.ErrReadOnly
+	}
+	resolved := ctx.Resolve(p)
+	return wfs.WriteFileAtomic(resolved, data, overwriteOpts(ctx, resolved, base, true))
+}
+
 // WriteFileMsg writes data and emits a uniform error line to errW on failure,
 // returning a shell-style exit code (0 ok, 1 error). It centralizes the
-// read-only and generic error messaging for the write verbs.
+// read-only, precondition, and generic error messaging for the write verbs.
 func WriteFileMsg(ctx CmdContext, errW io.Writer, cmdName, p string, data []byte, appendMode bool) int {
-	if _, err := WriteFile(ctx, p, data, appendMode); err != nil {
-		if errors.Is(err, vfs.ErrReadOnly) {
-			fmt.Fprintf(errW, "%s: %s: read-only filesystem\n", cmdName, p)
-		} else {
-			fmt.Fprintf(errW, "%s: %s: %s\n", cmdName, p, err)
-		}
+	_, err := WriteFile(ctx, p, data, appendMode)
+	return writeResultMsg(errW, cmdName, p, err)
+}
+
+// WriteFileCASMsg is WriteFileMsg for the compare-and-swap (known-base) seam.
+func WriteFileCASMsg(ctx CmdContext, errW io.Writer, cmdName, p string, data []byte, base []byte) int {
+	_, err := WriteFileCAS(ctx, p, data, base)
+	return writeResultMsg(errW, cmdName, p, err)
+}
+
+// writeResultMsg renders the shared exit code + message for a write result.
+func writeResultMsg(errW io.Writer, cmdName, p string, err error) int {
+	if err == nil {
+		return 0
+	}
+	var pae *vfs.PendingApprovalError
+	if errors.As(err, &pae) {
+		// Not a failure: the write was accepted as a pending request.
+		fmt.Fprintf(errW, "%s: %s pending approval as %s (requires %s)\n", cmdName, p, pae.RequestID, pae.Capability)
+		fmt.Fprintf(errW, "  track: /requests/%s\n", pae.RequestID)
+		return 0
+	}
+	var pe *vfs.PreconditionError
+	if errors.As(err, &pe) {
+		fmt.Fprintf(errW, "%s: %s: file changed concurrently — re-read and retry\n", cmdName, p)
 		return 1
 	}
-	return 0
+	if errors.Is(err, vfs.ErrReadOnly) {
+		fmt.Fprintf(errW, "%s: %s: read-only filesystem\n", cmdName, p)
+	} else {
+		fmt.Fprintf(errW, "%s: %s: %s\n", cmdName, p, err)
+	}
+	return 1
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/shell"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // run executes a single shell line and returns (stdout, stderr, exitCode).
@@ -96,7 +97,54 @@ func TestRedirect_OversizeRejected(t *testing.T) {
 	}
 }
 
+// Under the default "hash" policy concurrent overwrites are compare-and-swap:
+// the file is never torn, and a writer either wins (exit 0) or is rejected as a
+// concurrent change (exit 1, precondition) — never a silent clobber.
 func TestRedirect_ConcurrentOverwrite_NeverTorn(t *testing.T) {
+	_, d, _ := newWritableShell(t)
+
+	const n = 40
+	valid := map[string]bool{}
+	var mu sync.Mutex
+	wins := 0
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		val := fmt.Sprintf("writer-%02d-%s", i, strings.Repeat("x", 4000))
+		valid[val+"\n"] = true
+		wg.Add(1)
+		go func(v string) {
+			defer wg.Done()
+			sh := shell.NewShell(d) // own shell, shared FS (default: hash policy)
+			_, errs, code := run(sh, "echo "+v+" > /race.txt")
+			if code == 0 {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+				return
+			}
+			// The only acceptable failure is a CAS rejection.
+			if !strings.Contains(errs, "changed concurrently") {
+				t.Errorf("unexpected redirect failure: code=%d err=%q", code, errs)
+			}
+		}(val)
+	}
+	wg.Wait()
+
+	if wins == 0 {
+		t.Fatal("at least one concurrent overwrite must win")
+	}
+	got, err := d.ReadFile("/race.txt")
+	if err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	if !valid[string(got)] {
+		t.Fatalf("final content is torn / not a single writer's value (len=%d)", len(got))
+	}
+}
+
+// With last_write_wins the same race lets every writer succeed (no CAS); the
+// file is still never torn.
+func TestRedirect_ConcurrentOverwrite_LastWriteWins(t *testing.T) {
 	_, d, _ := newWritableShell(t)
 
 	const n = 40
@@ -108,9 +156,10 @@ func TestRedirect_ConcurrentOverwrite_NeverTorn(t *testing.T) {
 		wg.Add(1)
 		go func(v string) {
 			defer wg.Done()
-			sh := shell.NewShell(d) // own shell, shared FS
+			sh := shell.NewShell(d)
+			sh.SetConflictPolicyFn(func(string) vfs.WriteConflictPolicy { return vfs.PolicyLastWriteWins })
 			if _, errs, code := run(sh, "echo "+v+" > /race.txt"); code != 0 {
-				t.Errorf("concurrent redirect: code=%d err=%q", code, errs)
+				t.Errorf("last_write_wins redirect should always succeed: code=%d err=%q", code, errs)
 			}
 		}(val)
 	}

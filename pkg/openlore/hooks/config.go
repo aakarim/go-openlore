@@ -35,9 +35,10 @@ type Config struct {
 
 // HookSet groups commands by event kind.
 type HookSet struct {
-	OnStartup []HookCmd `yaml:"on_startup"`
-	PreRead   []HookCmd `yaml:"pre_read"`
-	PostWrite []HookCmd `yaml:"post_write"`
+	OnStartup       []HookCmd `yaml:"on_startup"`
+	PreRead         []HookCmd `yaml:"pre_read"`
+	PostWrite       []HookCmd `yaml:"post_write"`
+	ApprovalPending []HookCmd `yaml:"approval_pending"`
 }
 
 // HookCmd is a single shell command to run on an event.
@@ -77,6 +78,11 @@ func (c *Config) Validate() error {
 	}
 	for _, h := range c.Hooks.PostWrite {
 		if err := h.validate("post_write"); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, h := range c.Hooks.ApprovalPending {
+		if err := h.validate("approval_pending"); err != nil {
 			errs = append(errs, err)
 		}
 	}

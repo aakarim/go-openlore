@@ -16,6 +16,13 @@ data_dir: ./data
 # overridden per docset via write_conflict_policy in lore.json.
 write_conflict_policy: hash
 
+# Max concurrent async `spawn` jobs. The `spawn` command (granted only to
+# identities holding the "spawn" capability) runs an external command and writes
+# its output back into the lore in a background goroutine; this bounds how many
+# run at once. In-flight jobs are in-memory and lost on restart (drained briefly
+# on shutdown). Default 8.
+max_jobs: 8
+
 mcp:
   enabled: true
   path: /mcp
