@@ -65,6 +65,7 @@ The killer feature: bake your docs into a single distributable binary.
 
 ## Next Steps
 
+- Read `writes.md` to learn how OpenLore can be a safe, writable knowledge layer
 - Read `mcp.md` to connect MCP-aware clients (Claude Desktop, Cowork, etc.)
 - Run `teach` to learn how to set up OpenLore for your project
 - Run `agents` to get an AGENTS.md snippet for your AI agents

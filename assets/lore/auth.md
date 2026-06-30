@@ -37,6 +37,39 @@ Remote usage over SSH:
 echo "content" | ssh -p 2222 server publish <docset> <path>
 ```
 
+## Write Conflict Policy
+
+When the writable substrate is enabled (`readonly: false`), whole-file overwrite
+verbs — `>`, `tee`, `sed -i`, and `publish` — follow a configurable conflict
+policy:
+
+- **`hash`** (default) — overwrites are **compare-and-swap**. The write carries
+  the hash of the content it is based on; if the file changed since then, the
+  write is rejected with `file changed concurrently — re-read and retry` instead
+  of silently clobbering the other change. For read-modify-write verbs (`sed -i`)
+  the base is exactly what was transformed, giving true optimistic concurrency;
+  for a blind redirect it is the content read at command time.
+- **`last_write_wins`** — overwrites are unconditional (atomic, but the last
+  writer silently wins).
+
+Append (`>>`) and `patch` are **always** compare-and-swap, regardless of policy.
+
+Set the global default in `openlore.yml`:
+
+```yaml
+write_conflict_policy: hash   # or last_write_wins
+```
+
+Override it per docset in `lore.json` (takes precedence for paths in that docset):
+
+```json
+"scratch": {
+  "paths": ["/scratch"],
+  "publish_dir": "./published/scratch",
+  "write_conflict_policy": "last_write_wins"
+}
+```
+
 ## Public Key Auth
 
 Create a `lore.json` to control per-agent access:

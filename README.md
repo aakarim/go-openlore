@@ -221,7 +221,7 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 
 ### What's NOT Supported (By Design)
 
-No `rm`, `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, `exec`, or anything that spawns processes or accesses the network. The filesystem is read-only except for the `publish` command, which provides controlled writes to configured docsets. The shell is an interpreter, not a real bash process.
+No `rm`, `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, or `exec` from a normal session. The shell is an interpreter, not a real bash process. The filesystem is read-only by default; when writing is enabled the only mutation surface is the whole-file write verbs (`write`, `>`, `>>`, `tee`, `patch`, `sed -i`), `mkdir` inside docsets, `publish`, and — for explicitly trusted identities — `spawn` (see [Writing](#writing)). There is no streaming, partial, or offset write anywhere.
 
 ## Skills
 
@@ -262,6 +262,71 @@ Enable publishing by adding `publish_dir` to a docset in your `lore.json`:
 ```
 
 Published files are written to the `publish_dir` on disk. If the directory is within the served tree, files appear in the VFS immediately.
+
+## Writing
+
+`publish` is one of several **write verbs**. OpenLore can be a safe, writable
+knowledge layer that agents and teammates share over SSH — read-only by default,
+but with controlled, atomic, auditable mutation when you enable it. Every write
+is a **whole-object atomic swap** (temp file → fsync → `rename(2)`); there is no
+streaming, partial, or offset write.
+
+```bash
+echo "# Notes" > /mydocset/notes.md      # overwrite (compare-and-swap by default)
+echo "- point" >> /mydocset/notes.md     # safe concurrent append
+cat input.md | tee /mydocset/copy.md     # write stdin to a file
+cat change.diff | patch /mydocset/x.md   # apply a unified diff atomically
+sed -i 's/old/new/g' /mydocset/x.md      # edit in place
+mkdir /mydocset/section                   # create a folder inside a docset
+echo "# API" | publish mydocset api.md   # publish a new source
+```
+
+Key properties:
+
+- **Read-only by default.** The substrate boots read-only; writes require
+  `readonly: false` (or per-identity write scope). Embedded-docs binaries can
+  never be made writable.
+- **Scoped per identity.** A session can only write the docsets it's allowed to
+  `publish` to — everyone can read the shared lore, but each agent writes only
+  its own space.
+- **Compare-and-swap by default.** Overwrites are rejected (not silently
+  clobbered) if the file changed since you read it (`write_conflict_policy: hash`,
+  overridable to `last_write_wins`). Append and `patch` are always CAS.
+- **Optional human-in-the-loop approval.** A docset can mark paths
+  `requires_approval`; a write to those becomes a pending request under
+  `/requests` that an approver with the right capability commits via `approve`.
+- **Async external work (`spawn`).** Trusted identities (granted the `spawn`
+  capability) can run an external command and write its output back into the lore
+  in the background; track it under `/jobs`. The write-back is scoped,
+  CAS-checked, and approval-gated like any other write.
+
+Enable and tune writing in `openlore.yml` / `lore.json`:
+
+```yaml
+readonly: false              # turn on the writable substrate
+write_conflict_policy: hash  # hash (CAS, default) | last_write_wins
+max_jobs: 8                  # bound concurrent async spawn jobs
+```
+
+```json
+{
+  "docsets": {
+    "ops": {
+      "paths": ["/ops"],
+      "publish_dir": "./published/ops",
+      "write_conflict_policy": "hash",
+      "requires_approval": [
+        { "path": "/ops/policy.md", "capability": "approve@oncall" }
+      ]
+    }
+  }
+}
+```
+
+For the full design and internals — the layered session filesystem, the single
+write seam, preconditions, approvals, events/hooks, and async jobs — see
+[`docs/write-system.md`](docs/write-system.md). Connected agents can read the
+user-facing guide with `cat /writes.md`.
 
 ## CLI Commands
 
