@@ -1,13 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Setup script for deploying OpenLore on a fresh server.
-# Usage: scp the openlore binary + skills dir, then run this script as root.
+# One-time provisioning script for a fresh OpenLore server.
+# Requires a sudo-capable admin account for the initial setup only; the
+# service itself runs as the unprivileged "openlore" user. Routine deploys
+# are handled by .github/workflows/deploy-openlore-sh.yml (deploys as openlore).
 #
+# Usage (replace <admin> and <host>):
 #   scp openlore-linux <admin>@<host>:/tmp/openlore
 #   scp -r skills <admin>@<host>:/tmp/openlore-skills
 #   scp lore.json <admin>@<host>:/tmp/openlore-lore.json
-#   ssh <admin>@<host> 'bash -s' < setup.sh
+#   ssh <admin>@<host> 'sudo bash -s' < setup.sh
 
 BINARY="${1:-/tmp/openlore}"
 SKILLS_SRC="${2:-/tmp/openlore-skills}"
