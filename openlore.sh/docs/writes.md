@@ -55,23 +55,34 @@ even though you can still *read* shared docsets. This is how a team shares one
 server: everyone reads the common lore, but each agent writes only its own
 space.
 
-## Concurrent writes are safe (compare-and-swap)
+## Concurrent writes are safe (automatic compare-and-swap)
 
-By default OpenLore uses a **hash** conflict policy: an overwrite is a
-compare-and-swap against the bytes you read. If someone changed the file since
-you read it, your overwrite is **rejected** with a precondition error instead of
-silently clobbering their change — re-read and retry.
+By default OpenLore uses a **hash** conflict policy, and it tracks this **for
+you**: the server remembers the hash of every file you read in your session, so
+an overwrite is automatically a compare-and-swap against **the version you last
+read**. You never specify a hash.
 
 ```bash
-# If this fails with "precondition failed", re-read and reapply your change.
+cat /mydocset/shared.md          # you now "know" this version
+# ... edit locally ...
 echo "$NEW" > /mydocset/shared.md
+#   redirect: /mydocset/shared.md: file changed concurrently — re-read and retry
 ```
 
-Append (`>>`) and `patch` are *always* safe under concurrency — they read,
-modify, and commit-if-unchanged with automatic retry.
+If someone changed the file between your `cat` and your write, the overwrite is
+**rejected** instead of silently clobbering their change — just `cat` it again,
+reapply your edit, and write. So the safe pattern is simply: **read, then write.**
 
-Operators can switch a docset to `last_write_wins` (unconditional but still
-atomic) if a doc is single-writer and they don't want CAS rejections.
+Notes:
+
+- If you overwrite a file you **never read** this session, there's no baseline to
+  protect, so it's a plain overwrite. Read first to get conflict protection.
+- Repeated writes to the same file after one read chain fine — each successful
+  write updates what the server thinks you last saw.
+- Append (`>>`), `patch`, and `sed -i` are *always* safe under concurrency — they
+  read-modify-write against current content with automatic retry.
+- Operators can switch a docset to `last_write_wins` (unconditional but still
+  atomic) if a doc is single-writer and they don't want CAS rejections.
 
 ## Some writes need human approval
 

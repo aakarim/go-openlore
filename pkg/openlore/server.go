@@ -563,6 +563,16 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 		if s.sessionFSFn != nil {
 			sessionFS = s.sessionFSFn(id, sessionFS)
 		}
+		// Session CAS: track the hash of every file read (and written) so a
+		// later blind overwrite compare-and-swaps against the version the
+		// caller last saw, without naming a hash — an overwrite fails if the
+		// file changed since it was read. Outermost so it observes all reads;
+		// only meaningful (and only added) when the substrate is writable.
+		if !s.config.Readonly {
+			if w, ok := sessionFS.(vfs.WritableFS); ok {
+				sessionFS = newReadTrackingFS(w)
+			}
+		}
 
 		shell := shell.NewShell(sessionFS)
 		if s.config.DefaultCwd != "" {

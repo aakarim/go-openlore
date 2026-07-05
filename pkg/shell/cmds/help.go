@@ -64,11 +64,12 @@ func CmdHelp(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 	// (Part B capability gating). A read-only session never sees this surface.
 	if ctx.ActionAllowed(ActionWrite) {
 		fmt.Fprintln(w, "WRITES")
-		fmt.Fprintln(w, "  write [--if-match H|--if-none-match] <path>  Atomic write from stdin")
-		fmt.Fprintln(w, "  patch <file>                             Apply a unified diff (atomic)")
-		fmt.Fprintln(w, "  tee <file>                               Pass stdin to stdout and a file")
-		fmt.Fprintln(w, "  sed -i 's/a/b/' <file>                   Edit a file in place")
 		fmt.Fprintln(w, "  cmd > file  /  cmd >> file               Redirect output to a file")
+		fmt.Fprintln(w, "  tee <file>                               Pass stdin to stdout and a file")
+		fmt.Fprintln(w, "  patch <file>                             Apply a unified diff (atomic)")
+		fmt.Fprintln(w, "  sed -i 's/a/b/' <file>                   Edit a file in place")
+		fmt.Fprintln(w, "  (writes are atomic; an overwrite fails if the file changed")
+		fmt.Fprintln(w, "   since you last read it — cat it first, then write)")
 		fmt.Fprintln(w, "")
 	}
 	if ctx.ActionAllowed(ActionPublish) {

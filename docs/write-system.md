@@ -121,13 +121,14 @@ retry.
 
 Configured globally (`write_conflict_policy`) and overridable per docset:
 
-- **`hash` (default)** — overwrites are compare-and-swap. The write seam reads
-  the current bytes at command time and sends them as the `IfMatch` base, so a
-  change made since the read is rejected with a `PreconditionError`. For a
-  read-modify-write verb (`sed -i`, `patch`) the base is the exact content it
-  transformed, giving *true* optimistic concurrency; for a blind redirect
-  (`echo … > file`) the base is read at command time, so the guarantee narrows to
-  the command's own read→write window.
+- **`hash` (default)** — overwrites are compare-and-swap. The `IfMatch` base is
+  the session's **last-read hash** for the path (see §3a) when one exists, so a
+  change made since the caller last read the file is rejected with a
+  `PreconditionError` — the caller never names a hash. For a read-modify-write
+  verb (`sed -i`, `patch`) the base is the exact content it transformed, giving
+  *true* optimistic concurrency. For a blind redirect (`echo … > file`) to a path
+  the session never read, the base falls back to the content read at command
+  time, so the guarantee narrows to the command's own read→write window.
 - **`last_write_wins`** — overwrites are unconditional (zero `WriteOpts`):
   atomic, but the last writer silently wins.
 
@@ -135,6 +136,33 @@ Configured globally (`write_conflict_policy`) and overridable per docset:
 read-modify-write retry loop (`cmds.WriteFile` with `appendMode`): read current,
 compute hash, append, commit-if-unchanged, and on `PreconditionError` re-read and
 retry (bounded), so concurrent appends never clobber each other.
+
+### 3a. Session read-tracking (automatic CAS base)
+
+Callers should not have to compute or pass a hash to get optimistic concurrency.
+Instead, the outermost per-session filesystem wrapper —
+[`readTrackingFS`](../pkg/openlore/read_tracking_fs.go) — records the SHA-256 of
+every file the session **reads** (and re-records it after every successful
+**write**). It implements the optional `vfs.ReadTracker` interface
+(`LastReadHash(path) (hash, seen)`).
+
+When a blind overwrite runs under `hash` policy, `overwritePreconditions`
+(in [`write.go`](../pkg/shell/cmds/write.go)) asks the FS for the last-read hash
+of the target:
+
+- **read tracked** → `IfMatch = <last-read hash>`. The write commits only if the
+  file still matches what the session last saw, otherwise `PreconditionError`.
+  This is the "cat then write, and it fails if it changed underneath you"
+  behavior — across the whole session, not just one command.
+- **not tracked** → fall back to the content read at command time (narrow window),
+  or create-only (`IfNoneMatch`) if the file doesn't exist.
+
+Because the wrapper also re-records the new hash after each successful write,
+repeated overwrites of the same file after a single read chain correctly (the
+second write's base is the first write's result). The wrapper is added in
+`server.go` only when the substrate is writable, and it forwards
+`vfs.WriteScopeFS.CanWrite` so `spawn`'s fail-fast scope check still works
+through it.
 
 ---
 
@@ -306,6 +334,7 @@ The substrate is read-only unless `readonly: false` is set globally (or
 | FS contract, `WriteOpts`, errors, policy | [`pkg/vfs/vfs.go`](../pkg/vfs/vfs.go) |
 | On-disk atomic substrate, `MergeFS` | [`pkg/openlore/vfs.go`](../pkg/openlore/vfs.go) |
 | The write seam (CAS / append / policy) | [`pkg/shell/cmds/write.go`](../pkg/shell/cmds/write.go) |
+| Session read-tracking (auto CAS base) | [`pkg/openlore/read_tracking_fs.go`](../pkg/openlore/read_tracking_fs.go) |
 | Per-identity scope gate | [`pkg/openlore/scoped_write_fs.go`](../pkg/openlore/scoped_write_fs.go) |
 | Approval gate | [`pkg/openlore/approval_fs.go`](../pkg/openlore/approval_fs.go) |
 | Requests store + `/requests` + approve/reject | [`pkg/openlore/approval.go`](../pkg/openlore/approval.go), [`pkg/shell/cmds/approve.go`](../pkg/shell/cmds/approve.go) |

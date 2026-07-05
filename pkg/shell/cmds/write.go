@@ -13,6 +13,33 @@ import (
 // maxAppendRetries bounds the compare-and-swap loop for atomic appends.
 const maxAppendRetries = 64
 
+// overwritePreconditions resolves the WriteOpts for a blind whole-file
+// overwrite (`>`, tee, publish) to resolved. Under PolicyLastWriteWins it is
+// unconditional. Under PolicyHash it is compare-and-swap; the base it swaps
+// against is, in order of preference:
+//
+//  1. the session's last-read (or last-written) hash for this path, if the
+//     filesystem tracks reads (vfs.ReadTracker) — so an overwrite fails if the
+//     file changed since the caller last saw it, without the caller naming a
+//     hash;
+//  2. otherwise the current content read at command time — a narrower guard
+//     covering only the command's own read→write window (and create-only when
+//     the target does not yet exist).
+func overwritePreconditions(ctx CmdContext, resolved string) vfs.WriteOpts {
+	if ctx.WriteConflictPolicy(resolved) == vfs.PolicyLastWriteWins {
+		return vfs.WriteOpts{}
+	}
+	if rt, ok := ctx.FS().(vfs.ReadTracker); ok {
+		if h, seen := rt.LastReadHash(resolved); seen {
+			hh := h
+			return vfs.WriteOpts{IfMatch: &hh}
+		}
+	}
+	// No tracked read of this path: fall back to a command-time base.
+	cur, readErr := ctx.FS().ReadFile(resolved)
+	return overwriteOpts(ctx, resolved, cur, readErr == nil)
+}
+
 // overwriteOpts builds the precondition for a whole-file overwrite to resolved
 // under the session's write-conflict policy. base is the content the caller
 // treats as the write's base; baseExists is whether that base is a real prior
@@ -35,12 +62,13 @@ func overwriteOpts(ctx CmdContext, resolved string, base []byte, baseExists bool
 // blind write verb (`>`, `>>`, tee, publish): there is no streaming.
 //
 // When appendMode is false it performs a whole-file overwrite governed by the
-// session's write-conflict policy: under "hash" (the default) it is a
-// compare-and-swap against the content read at command time, so a concurrent
-// change surfaces a vfs.PreconditionError; under "last_write_wins" it is an
-// unconditional atomic overwrite. When appendMode is true it runs a
-// read-modify-write CAS loop so concurrent appends never clobber each other,
-// regardless of policy.
+// session's write-conflict policy (see overwritePreconditions): under "hash"
+// (the default) it is a compare-and-swap against the session's last-read hash
+// for the path (or, if none was tracked, the content read at command time), so a
+// concurrent change since the caller last saw the file surfaces a
+// vfs.PreconditionError; under "last_write_wins" it is an unconditional atomic
+// overwrite. When appendMode is true it runs a read-modify-write CAS loop so
+// concurrent appends never clobber each other, regardless of policy.
 //
 // A read-modify-write verb that already holds the base it transformed (sed -i)
 // should call WriteFileCAS instead, so the precondition is the true base rather
@@ -56,12 +84,7 @@ func WriteFile(ctx CmdContext, p string, data []byte, appendMode bool) (string, 
 	resolved := ctx.Resolve(p)
 
 	if !appendMode {
-		if ctx.WriteConflictPolicy(resolved) == vfs.PolicyLastWriteWins {
-			return wfs.WriteFileAtomic(resolved, data, vfs.WriteOpts{})
-		}
-		// hash policy: capture the current content as the CAS base.
-		cur, readErr := ctx.FS().ReadFile(resolved)
-		return wfs.WriteFileAtomic(resolved, data, overwriteOpts(ctx, resolved, cur, readErr == nil))
+		return wfs.WriteFileAtomic(resolved, data, overwritePreconditions(ctx, resolved))
 	}
 
 	// Atomic append: read current content, append, commit-if-unchanged, retry.

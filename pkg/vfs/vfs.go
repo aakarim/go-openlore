@@ -138,6 +138,18 @@ type WriteScopeFS interface {
 	CanWrite(path string) bool
 }
 
+// ReadTracker is optionally implemented by a session filesystem that remembers
+// the content hash of every file read during the session. It lets the write
+// seam compare-and-swap a whole-file overwrite against the version the caller
+// last saw — without the caller naming a hash — so an overwrite fails if the
+// file changed since it was last read. A successful write updates the tracked
+// hash so repeated writes in one session chain correctly.
+type ReadTracker interface {
+	// LastReadHash returns the hex SHA-256 recorded when path was last read
+	// (or written) in this session, and whether such a record exists.
+	LastReadHash(path string) (hash string, seen bool)
+}
+
 // ErrReadOnly is returned by mutating operations when the substrate is in
 // read-only mode.
 var ErrReadOnly = fmt.Errorf("read-only filesystem")
