@@ -50,3 +50,7 @@ folders:
     path: ./published/ray
   - name: razer
     path: ./published/razer
+  - name: miles
+    path: ./published/miles
+  - name: zeb
+    path: ./published/zeb
