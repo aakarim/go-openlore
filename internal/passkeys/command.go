@@ -22,14 +22,15 @@ const passkeyHelp = `
     passkey help                  Show this help
 
   Register options:
-    --name NAME    Label for the passkey (default: "default")
-    --lore SPEC    Lore spec to grant (default: "full-access")
+    --identity NAME  Identity to authenticate as (required). Must be an
+                     identity in your auth config; login mints tokens for it.
+    --name LABEL     Device label for the passkey (default: "default")
 
   Examples:
-    passkey register                              Register with defaults
-    passkey register --name "MacBook" --lore ops  Register for "ops" lore
-    passkey list                                  Show all passkeys
-    passkey revoke "MacBook"                      Delete a passkey
+    passkey register --identity alice                 Register for identity "alice"
+    passkey register --identity alice --name MacBook  Label the device
+    passkey list                                      Show all passkeys
+    passkey revoke "MacBook"                          Delete a passkey by label
 
   Setup:
     Add this to your openlore.yml to enable passkeys:
@@ -75,7 +76,7 @@ func RegisterShellCommand(pk *Passkeys, baseURL string) {
 
 func (pk *Passkeys) cmdRegister(baseURL string, args []string, w io.Writer, errW io.Writer) int {
 	name := "default"
-	lore := "full-access"
+	identity := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--name":
@@ -83,15 +84,28 @@ func (pk *Passkeys) cmdRegister(baseURL string, args []string, w io.Writer, errW
 				name = args[i+1]
 				i++
 			}
-		case "--lore":
+		case "--identity":
 			if i+1 < len(args) {
-				lore = args[i+1]
+				identity = args[i+1]
 				i++
 			}
 		}
 	}
 
-	pr, err := pk.pending.Create(lore, name)
+	if identity == "" {
+		fmt.Fprintln(errW, "passkey: --identity <name> is required")
+		fmt.Fprintln(errW, "Run 'passkey help' for usage.")
+		return 1
+	}
+	// Validate the identity exists in the auth table so login can resolve its
+	// authority. Skipped only when no token issuer is wired (standalone / no
+	// auth config), where any name is accepted.
+	if pk.tokens != nil && !pk.tokens.IdentityExists(identity) {
+		fmt.Fprintf(errW, "passkey: unknown identity %q (not in auth config)\n", identity)
+		return 1
+	}
+
+	pr, err := pk.pending.Create(identity, name)
 	if err != nil {
 		fmt.Fprintf(errW, "passkey: %s\n", err)
 		return 1
@@ -101,8 +115,8 @@ func (pk *Passkeys) cmdRegister(baseURL string, args []string, w io.Writer, errW
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  📱 Passkey Registration")
 	fmt.Fprintln(w, "  ─────────────────────────")
-	fmt.Fprintf(w, "  Name:    %s\n", name)
-	fmt.Fprintf(w, "  Access:  %s\n", lore)
+	fmt.Fprintf(w, "  Device:    %s\n", name)
+	fmt.Fprintf(w, "  Identity:  %s\n", identity)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  Visit this URL to register your passkey:")
 	fmt.Fprintf(w, "  %s\n", url)
@@ -115,9 +129,9 @@ func (pk *Passkeys) cmdRegister(baseURL string, args []string, w io.Writer, errW
 func (pk *Passkeys) cmdList(w io.Writer) int {
 	creds := pk.store.AllCredentials()
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  %-20s %-16s %s\n", "NAME", "ACCESS", "REGISTERED")
+	fmt.Fprintf(w, "  %-20s %-16s %s\n", "DEVICE", "IDENTITY", "REGISTERED")
 	for _, c := range creds {
-		fmt.Fprintf(w, "  %-20s %-16s %s\n", c.Name, c.Lore, c.CreatedAt.Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "  %-20s %-16s %s\n", c.Name, c.Identity, c.CreatedAt.Format("2006-01-02 15:04"))
 	}
 	fmt.Fprintln(w)
 	return 0

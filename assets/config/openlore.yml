@@ -37,6 +37,19 @@ passkeys:
   passkeys_file: ./config/passkeys.json
   session_ttl: 24h
 
+# Bearer-token auth for the MCP + HTTP API. Server infrastructure (how this
+# instance mints/verifies tokens), so it lives here, not in lore.json. Enabling
+# it mounts the OAuth flow (/authorize, /oauth/token), Dynamic Client
+# Registration (/register), and discovery (/.well-known/oauth-*), so OAuth-native
+# MCP clients (Claude Desktop, Cowork) can log in — while posture (public vs
+# token-required) still derives from lore.json's allow_keyless/unknown_identity.
+# The ES256 signing key is generated on first boot under <data_dir>/auth/.
+tokens:
+  issuer: https://openlore.sh
+  audience: https://openlore.sh
+  access_ttl: 30m
+  refresh_ttl: 720h
+
 folders:
   - name: knowledge
     path: ./published/knowledge

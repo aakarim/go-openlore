@@ -35,9 +35,9 @@ func TestServer_ResolveHomeDir(t *testing.T) {
 	}
 }
 
-func TestServer_ResolveHomeDir_NoAuth(t *testing.T) {
-	s := &Server{}
+func TestServer_ResolveHomeDir_EmptyAuth(t *testing.T) {
+	s := &Server{auth: &config.AuthConfig{}}
 	if got := s.resolveHomeDir("anything"); got != "" {
-		t.Errorf("no auth: got %q, want empty", got)
+		t.Errorf("empty auth: got %q, want empty", got)
 	}
 }

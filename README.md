@@ -723,4 +723,10 @@ See [SECURITY.md](SECURITY.md) for a full security evaluation.
 
 ## License
 
-[Mozilla Public License 2.0](LICENSE) — Adil Karim
+[MIT](LICENSE) — Adil Karim
+
+OpenLore bundles third-party open-source components. Their licenses and required
+notices are listed in
+[assets/legal/THIRD_PARTY_NOTICES.md](assets/legal/THIRD_PARTY_NOTICES.md), with
+full license texts in [assets/legal/licenses/](assets/legal/licenses/). These are
+embedded in the binary and served by the running service at `/legal`.

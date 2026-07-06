@@ -34,6 +34,20 @@ mcp:
   enabled: true
   path: /mcp
 
+# ── JSON HTTP API ─────────────────────────────────────
+#
+# A plain JSON HTTP API, backed by the same MCP server, for clients that
+# prefer simple REST calls over the MCP wire protocol. It exposes the
+# same two tools:
+#   POST {path}/shell     body {"command": "..."}
+#   GET  {path}/commands
+#
+# Mounted at `path` on the HTTP server (http_port above). Enabled by
+# default. Set enabled: false to turn it off.
+api:
+  enabled: true
+  path: /api
+
 # TLS certificate and key for the HTTP server (optional).
 # Only applies to the HTTP front page, not SSH.
 # tls_cert: ./cert.pem
@@ -106,6 +120,37 @@ host_key_path: .ssh/openlore_ed25519
 #   lore_path: /lore                  # HTTP path prefix for browsing docs
 #   passkeys_file: ./config/passkeys.json  # Where credentials are stored
 #   session_ttl: 24h                  # How long browser sessions last
+
+# ── Bearer tokens (MCP + HTTP API) ────────────────────
+#
+# Enable bearer-token auth for the MCP + HTTP API. This is SERVER
+# infrastructure — how this instance mints and verifies tokens — so it
+# lives here, not in lore.json (which is access policy). When omitted,
+# the MCP/HTTP endpoints serve anonymous callers (Phase 0). Posture
+# (public vs token-required) still derives from lore.json's
+# allow_keyless / unknown_identity.
+#
+# The ES256 signing key is generated on first boot under <data_dir>/auth/.
+# Public keys are published at /.well-known/jwks.json. Passkey login mints
+# tokens via the OAuth authorization-code + PKCE flow at /authorize →
+# /oauth/token. Mint a debug/local token with:
+#   openlore token mint --identity NAME --config ./openlore.yml
+#
+# tokens:
+#   issuer: https://docs.example.com      # `iss` claim + JWKS base URL
+#   audience: https://docs.example.com    # required `aud`; one per instance
+#   access_ttl: 30m                       # access-token lifetime
+#   refresh_ttl: 720h                     # refresh-token lifetime
+#
+# Workload Identity Federation (WIF): external IdPs whose JWTs are exchanged for
+# OpenLore tokens at the token endpoint (grant_type=jwt-bearer). Each issuer's
+# JWKS is discovered and its assertions are verified (issuer + our audience) and
+# mapped to identities via `match` rules in lore.json. See
+# docs/workload-identity-federation.md.
+# oidc_issuers:
+#   - issuer_url: https://token.actions.githubusercontent.com
+#     jwks:
+#       mode: discovery
 
 # ── Content ───────────────────────────────────────────
 

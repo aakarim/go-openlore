@@ -2,6 +2,9 @@
   "allow_keyless": true,
   "unknown_identity": "allow",
   "default_cwd": "/docs",
+
+  "//tokens": "Bearer-token auth for the MCP + HTTP API is SERVER config: set the `tokens:` block in openlore.yml, not here. lore.json is access policy (who can see what); token issuance is infrastructure.",
+
   "docsets": {
     "public": {
       "paths": [
@@ -71,7 +74,12 @@
       "name": "read-all",
       "comment": "Full read access to all documentation",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleReadAllKeyHere admin",
-      "lore": "full-access"
+      "lore": "full-access",
+      "//match": "Optional: extra token-claim predicates that resolve TO this identity. A token whose `sub` == the identity Name resolves here automatically; add `match` only to map additional subjects (aliases) or WIF assertions via `sub_prefix`/`aud`/`claims`. `scope` narrows (e.g. \"read\") and `ttl` caps matched WIF tokens. Exact `sub` beats pattern matches.",
+      "match": [
+        { "sub": "alice" },
+        { "sub_prefix": "repo:my-org/my-repo:", "aud": "https://docs.example.com", "scope": "read", "ttl": "15m" }
+      ]
     }
   ]
 }

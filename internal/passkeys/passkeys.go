@@ -19,6 +19,29 @@ import (
 //go:embed login.html register.html
 var pages embed.FS
 
+// TokenIssuer is the seam through which a successful passkey login mints a
+// bearer token for the MCP + HTTP API. pkg/openlore injects a *Server here;
+// internal/passkeys cannot import pkg/openlore (import cycle), so the contract
+// lives on this side. See docs/mcp-bearer-auth.md §8.2.
+type TokenIssuer interface {
+	// IdentityExists reports whether name is a registered identity in the auth
+	// table. Registration references an identity by name (Q6/§8.3), so this
+	// validates the target at register time.
+	IdentityExists(name string) bool
+	// LoreForIdentity returns the lore spec name granted to an identity, used to
+	// set the browser session cookie for the /lore browser.
+	LoreForIdentity(name string) (lore string, ok bool)
+	// IssueAuthCode mints a single-use OAuth authorization code for sub, to be
+	// exchanged at /oauth/token. ok is false when token auth is disabled, in
+	// which case login still sets the browser cookie but issues no bearer token.
+	IssueAuthCode(sub, scope string) (code string, ok bool)
+	// CompleteAuthorize finalizes an in-flight OAuth authorization-code request
+	// (started at GET /authorize) for the authenticated sub, returning the
+	// redirect URL (redirect_uri?code=&state=) the browser should navigate to.
+	// ok is false when the request id is unknown/expired or token auth is off.
+	CompleteAuthorize(requestID, sub string) (redirectURL string, ok bool)
+}
+
 // Config holds the resolved passkey configuration.
 type Config struct {
 	Enabled      bool
@@ -41,7 +64,8 @@ type Passkeys struct {
 	pending  *PendingStore
 	logger   *slog.Logger
 
-	auth *config.AuthConfig
+	auth   *config.AuthConfig
+	tokens TokenIssuer
 
 	// loginSessions holds in-flight discoverable-login ceremonies keyed by the
 	// short-lived openlore_login cookie token.
@@ -94,6 +118,13 @@ func (p *Passkeys) SetAuthConfig(auth *config.AuthConfig) {
 	p.auth = auth
 }
 
+// SetTokenIssuer wires the token-minting seam used by the login-success hook to
+// issue bearer tokens (docs/mcp-bearer-auth.md §8.2). When nil, login only sets
+// the browser session cookie.
+func (p *Passkeys) SetTokenIssuer(ti TokenIssuer) {
+	p.tokens = ti
+}
+
 // Shutdown stops background goroutines.
 func (p *Passkeys) Shutdown() {
 	if p.pending != nil {
@@ -135,7 +166,7 @@ func (p *Passkeys) handleRegister(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(page)
 	case "info":
-		writeJSON(w, map[string]string{"name": pr.Name, "lore": pr.Lore})
+		writeJSON(w, map[string]string{"name": pr.Name, "identity": pr.Identity})
 	case "begin":
 		p.handleRegisterBegin(w, r, pr)
 	case "finish":
@@ -199,7 +230,7 @@ func (p *Passkeys) handleRegisterFinish(w http.ResponseWriter, r *http.Request, 
 	if err := p.store.Add(StoredCredential{
 		UserID:     pr.UserID,
 		Name:       pr.Name,
-		Lore:       pr.Lore,
+		Identity:   pr.Identity,
 		CreatedAt:  time.Now().UTC(),
 		Credential: *cred,
 	}); err != nil {
@@ -209,7 +240,7 @@ func (p *Passkeys) handleRegisterFinish(w http.ResponseWriter, r *http.Request, 
 	p.pending.Delete(pr.Token)
 
 	if p.logger != nil {
-		p.logger.Info("passkey registered", "name", pr.Name, "lore", pr.Lore)
+		p.logger.Info("passkey registered", "device", pr.Name, "identity", pr.Identity)
 	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
@@ -301,7 +332,30 @@ func (p *Passkeys) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 
 	_ = p.store.UpdateSignCount(cred.ID, cred.Authenticator.SignCount)
 
-	p.sessions.SetCookie(w, matched.Lore)
+	// Set the browser session cookie for the /lore docs browser. The cookie
+	// carries the lore spec the identity is granted, resolved live from the
+	// identity table.
+	lore := ""
+	if p.tokens != nil {
+		if l, ok := p.tokens.LoreForIdentity(matched.Identity); ok {
+			lore = l
+		}
+	}
+	p.sessions.SetCookie(w, lore)
+
+	// OAuth authorization-code flow: if this login was reached via /authorize
+	// (?authz=<id>), finalize it and hand the browser a redirect back to the
+	// client's redirect_uri with an auth code. This is the "normal OAuth"
+	// callback path used by the Obsidian plugin.
+	if authz := r.URL.Query().Get("authz"); authz != "" && p.tokens != nil {
+		if redirectURL, ok := p.tokens.CompleteAuthorize(authz, matched.Identity); ok {
+			writeJSON(w, map[string]string{"redirect": redirectURL})
+			return
+		}
+		http.Error(w, "authorization request expired", http.StatusBadRequest)
+		return
+	}
+
 	writeJSON(w, map[string]bool{"ok": true})
 }
 

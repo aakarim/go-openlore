@@ -19,6 +19,8 @@ WORKDIR /app
 COPY --from=builder /app/openlore .
 COPY --from=builder /app/openlore.sh/skills ./skills
 COPY --from=builder /app/openlore.sh/motd.txt ./motd.txt
+# Third-party license notices are embedded in the binary (assets/legal) and
+# served at /legal by the HTTP server.
 
 EXPOSE 2222 8080
 

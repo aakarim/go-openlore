@@ -80,7 +80,7 @@ func TestRegisterFlow(t *testing.T) {
 	}
 
 	// Create a real pending registration and confirm the page + info resolve.
-	pr, err := pk.pending.Create("agent-full", "MacBook")
+	pr, err := pk.pending.Create("alice", "MacBook")
 	if err != nil {
 		t.Fatalf("pending.Create: %v", err)
 	}
@@ -94,13 +94,13 @@ func TestRegisterFlow(t *testing.T) {
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/passkey/r/"+pr.Token+"/info", nil))
 	var info struct {
-		Name string `json:"name"`
-		Lore string `json:"lore"`
+		Name     string `json:"name"`
+		Identity string `json:"identity"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &info); err != nil {
 		t.Fatalf("info decode: %v", err)
 	}
-	if info.Name != "MacBook" || info.Lore != "agent-full" {
+	if info.Name != "MacBook" || info.Identity != "alice" {
 		t.Fatalf("unexpected info: %+v", info)
 	}
 }

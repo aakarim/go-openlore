@@ -30,10 +30,10 @@
   <p class="subtitle">Link this device to your OpenLore server</p>
   <div class="info">
     <dl>
-      <dt>Passkey Name</dt>
+      <dt>Device Name</dt>
       <dd><input id="passkey-name" type="text" value="" placeholder="e.g. Adil MacBook" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;padding:0.4rem 0.6rem;width:100%;font-size:0.9rem;"></dd>
-      <dt>Access Level</dt>
-      <dd id="lore-name">—</dd>
+      <dt>Identity</dt>
+      <dd id="identity-name">—</dd>
     </dl>
   </div>
   <button id="register-btn" onclick="startRegistration()">Register Passkey</button>
@@ -51,7 +51,7 @@ async function init() {
   }
   const info = await resp.json();
   document.getElementById('passkey-name').value = info.name;
-  document.getElementById('lore-name').textContent = info.lore;
+  document.getElementById('identity-name').textContent = info.identity;
 }
 
 async function startRegistration() {

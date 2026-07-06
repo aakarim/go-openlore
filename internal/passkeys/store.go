@@ -15,10 +15,12 @@ import (
 type StoredCredential struct {
 	// UserID is the WebAuthn user handle (random bytes, base64url-encoded in JSON).
 	UserID []byte `json:"user_id"`
-	// Name is a human-readable label for this passkey.
+	// Name is a human-readable device label for this passkey.
 	Name string `json:"name"`
-	// Lore is the lore spec this passkey grants access to.
-	Lore string `json:"lore"`
+	// Identity is the OpenLore identity name this passkey authenticates as. It
+	// becomes the token `sub` at login, from which authority (lore, capabilities,
+	// home) is resolved live via the identity table (docs/mcp-bearer-auth.md §7).
+	Identity string `json:"identity"`
 	// CreatedAt is when the passkey was registered.
 	CreatedAt time.Time `json:"created_at"`
 	// Credential is the WebAuthn credential data.

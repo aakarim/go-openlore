@@ -118,3 +118,10 @@ openlore identity add \
 In `lore.json`:
 - `"unknown_identity": "allow"` — unrecognized keys get the "default" lore
 - `"unknown_identity": "deny"` — unrecognized keys are rejected
+
+## Federated Access (WIF)
+
+To let CI runners, agents, and services reach the `/mcp` and `/api` endpoints
+without long-lived keys — by exchanging a short-lived IdP token (GitHub Actions
+OIDC, Kubernetes/SPIFFE, Okta/Entra/…) for an OpenLore token — see
+`cat /workload-identity-federation.md`.

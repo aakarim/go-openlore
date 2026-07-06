@@ -18,6 +18,9 @@ var skillsFS embed.FS
 //go:embed all:web
 var webFS embed.FS
 
+//go:embed all:legal
+var legalFS embed.FS
+
 //go:embed config/motd.txt
 var defaultMOTD string
 
@@ -65,6 +68,14 @@ func Skills() fs.FS {
 // Web returns the embedded web assets filesystem (rooted inside web/).
 func Web() fs.FS {
 	sub, _ := fs.Sub(webFS, "web")
+	return sub
+}
+
+// Legal returns the embedded third-party legal notices filesystem (rooted
+// inside legal/). It contains THIRD_PARTY_NOTICES.md and a licenses/ directory
+// with the full license text of every bundled dependency.
+func Legal() fs.FS {
+	sub, _ := fs.Sub(legalFS, "legal")
 	return sub
 }
 

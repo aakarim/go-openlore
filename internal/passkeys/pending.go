@@ -17,7 +17,7 @@ const (
 // PendingRegistration represents an in-flight passkey registration.
 type PendingRegistration struct {
 	Token     string
-	Lore      string
+	Identity  string
 	Name      string
 	UserID    []byte
 	Session   *webauthn.SessionData
@@ -42,7 +42,7 @@ func NewPendingStore() *PendingStore {
 }
 
 // Create generates a new pending registration and returns it.
-func (ps *PendingStore) Create(loreName, passkeyName string) (*PendingRegistration, error) {
+func (ps *PendingStore) Create(identity, passkeyName string) (*PendingRegistration, error) {
 	token, err := generateToken()
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (ps *PendingStore) Create(loreName, passkeyName string) (*PendingRegistrati
 
 	pr := &PendingRegistration{
 		Token:     token,
-		Lore:      loreName,
+		Identity:  identity,
 		Name:      passkeyName,
 		UserID:    userID,
 		ExpiresAt: time.Now().Add(tokenTTL),

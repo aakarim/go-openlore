@@ -16,6 +16,7 @@ import (
 	"github.com/aakarim/go-openlore/assets"
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/internal/httpserver"
+	"github.com/aakarim/go-openlore/internal/legal"
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
@@ -38,16 +39,23 @@ type SessionFSFn func(id Identity, base vfs.FileSystem) vfs.FileSystem
 
 // Server is the main OpenLore SSH server.
 type Server struct {
-	config   config.Config
-	auth     *config.AuthConfig
-	fs       vfs.FileSystem
-	merge    *MergeFS
-	metrics  *metrics.Metrics
-	srv      *ssh.Server
-	httpSrv  *httpserver.Server
-	passkeys *passkeys.Passkeys
-	logger   *slog.Logger
-	motd     string
+	config config.Config
+	// auth is always non-nil so downstream code never nil-checks it. When
+	// authEnforced is false, auth is an empty policy and the server runs in
+	// trusted/unrestricted mode (local `openlore .`, or an embedded server such
+	// as knowledge-backend that does its own scoping): callers get full access.
+	// When true, an access-control policy was loaded and identity scoping is
+	// enforced (docsets filtered, anonymous is read-only).
+	auth         *config.AuthConfig
+	authEnforced bool
+	fs           vfs.FileSystem
+	merge        *MergeFS
+	metrics      *metrics.Metrics
+	srv          *ssh.Server
+	httpSrv      *httpserver.Server
+	passkeys     *passkeys.Passkeys
+	logger       *slog.Logger
+	motd         string
 
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
@@ -63,6 +71,20 @@ type Server struct {
 
 	// jobs runs async external work (Part D), surfaced read-only at /jobs.
 	jobs *JobManager
+
+	// Bearer-token auth for the MCP + HTTP API (docs/mcp-bearer-auth.md).
+	// identityStore is always set (resolves claims → Identity). The rest are
+	// non-nil only when auth.tokens is configured, which enables token auth.
+	identityStore IdentityStore
+	issuer        Issuer
+	refreshStore  RefreshTokenStore
+	clientStore   ClientStore
+	authCodes     *authCodeStore
+	authorizeReqs *authorizeStore
+	tokens        *tokenEndpoint
+	// oidc verifies external IdP assertions for the jwt-bearer (WIF) grant. It
+	// is non-nil only when oidc_issuers are configured alongside auth.tokens.
+	oidc OIDCVerifier
 }
 
 // NewServer creates a new OpenLore SSH server.
@@ -80,7 +102,10 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 	}
 
 	s := &Server{
-		config:  cfg,
+		config: cfg,
+		// Default to an empty (unenforced) policy; a loaded auth file replaces
+		// it and sets authEnforced below.
+		auth:    &config.AuthConfig{},
 		merge:   NewMergeFS(),
 		metrics: &metrics.Metrics{},
 		logger:  logger,
@@ -99,6 +124,7 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 			return nil, fmt.Errorf("loading auth config: %w", err)
 		}
 		s.auth = auth
+		s.authEnforced = true
 
 		// Auth policy fields override config defaults
 		if auth.AllowKeyless != nil {
@@ -122,15 +148,13 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 	// Collect docset root display paths so DirFS.Mkdir can enforce the
 	// "strictly below a docset root" boundary.
 	var docsetRoots []string
-	if s.auth != nil {
-		for _, ds := range s.auth.Docsets {
-			for _, pm := range ds.Paths {
-				display := pm.Display
-				if display == "" {
-					display = pm.Source
-				}
-				docsetRoots = append(docsetRoots, display)
+	for _, ds := range s.auth.Docsets {
+		for _, pm := range ds.Paths {
+			display := pm.Display
+			if display == "" {
+				display = pm.Source
 			}
+			docsetRoots = append(docsetRoots, display)
 		}
 	}
 
@@ -243,9 +267,11 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		}
 		s.passkeys = pk
 
-		if s.auth != nil {
-			pk.SetAuthConfig(s.auth)
-		}
+		pk.SetAuthConfig(s.auth)
+	}
+
+	if err := s.initAuth(); err != nil {
+		return nil, fmt.Errorf("setting up token auth: %w", err)
 	}
 
 	return s, nil
@@ -322,7 +348,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 	}
 
 	// Resolve path access from auth config
-	if s.auth != nil && id.PublicKey != nil {
+	if s.authEnforced && id.PublicKey != nil {
 		// Extract the underlying public key for matching.
 		// If the client presented a certificate, sess.PublicKey() returns
 		// the certificate itself — we need the inner key to match against
@@ -340,12 +366,16 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 		// First: try matching by public key.
 		for _, ident := range s.auth.Identities {
 			if ident.PublicKey == keyStr {
-				id.IdentityName = ident.Name
-				id.LoreName = ident.Lore
-				id.PathAccess = s.resolveLorePathAccess(ident.Lore)
-				id.PublishDocsets = ident.Publish
-				id.Capabilities = ident.Capabilities
-				id.HomeDir = s.resolveHomeDir(ident.Home)
+				// Shared with token resolution: an authenticated key holds this
+				// identity's full authority.
+				src := s.identityFromAuth(ident)
+				id.IdentityName = src.IdentityName
+				id.LoreName = src.LoreName
+				id.PathAccess = src.PathAccess
+				id.PublishDocsets = src.PublishDocsets
+				id.Capabilities = src.Capabilities
+				id.HomeDir = src.HomeDir
+				id.Scopes = src.Scopes
 				matched = true
 				break
 			}
@@ -360,6 +390,8 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				if _, ok := s.auth.Lore[principal]; ok {
 					id.LoreName = principal
 					id.PathAccess = s.resolveLorePathAccess(principal)
+					// A valid cert holds this lore's full authority.
+					id.Scopes = []string{ScopeFull}
 					matched = true
 					break
 				}
@@ -373,7 +405,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				id.PathAccess = s.resolveLorePathAccess("default")
 			}
 		}
-	} else if s.auth != nil {
+	} else if s.authEnforced {
 		// Keyless connection with auth config: use "default" lore
 		if _, ok := s.auth.Lore["default"]; ok {
 			id.LoreName = "default"
@@ -381,6 +413,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 		}
 	} else {
 		// No auth config at all: full access
+		id.Scopes = []string{ScopeFull}
 		for name := range s.merge.mounts {
 			id.PathAccess = append(id.PathAccess, config.PathMapping{
 				Source:  "/" + name,
@@ -395,9 +428,6 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 // resolveLorePathAccess resolves a lore name to path mappings by looking up
 // its docset list and collecting all paths from each referenced docset.
 func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
-	if s.auth == nil {
-		return nil
-	}
 	docsetNames, ok := s.auth.Lore[loreName]
 	if !ok {
 		return nil
@@ -418,7 +448,7 @@ func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
 // mapping of the docset (its Display, falling back to Source). Returns "" when
 // no home is set or the docset has no paths.
 func (s *Server) resolveHomeDir(homeDocset string) string {
-	if s.auth == nil || homeDocset == "" {
+	if homeDocset == "" {
 		return ""
 	}
 	ds, ok := s.auth.Docsets[homeDocset]
@@ -440,7 +470,7 @@ func (s *Server) resolveHomeDir(homeDocset string) string {
 // can only further restrict. Returns nil for an unrecognized identity, so
 // anonymous sessions are read-only.
 func (s *Server) writableDocsetRoots(id Identity) []string {
-	if s.auth == nil || id.IdentityName == "" {
+	if id.IdentityName == "" {
 		return nil
 	}
 	names := id.PublishDocsets
@@ -475,9 +505,6 @@ func (s *Server) writeConflictPolicy(p string) vfs.WriteConflictPolicy {
 	global := s.config.WriteConflictPolicy
 	if global == "" {
 		global = vfs.DefaultWriteConflictPolicy
-	}
-	if s.auth == nil {
-		return global
 	}
 	clean := vfs.CleanPath(p)
 	for _, ds := range s.auth.Docsets {
@@ -557,121 +584,206 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 			}
 		}()
 
-		// Build per-session filesystem filtered by lore (the identity's docsets)
-		sessionFS := vfs.FileSystem(s.merge)
-		if id.LoreName != "" && s.auth != nil {
-			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
-				allowed := make(map[string]bool)
-				for _, ds := range docsetNames {
-					allowed[ds] = true
-				}
-				sessionFS = s.merge.FilteredView(allowed)
-			}
-		}
-		// Part C approval gating: writes to gated paths become pending requests
-		// instead of committing. This wrapper sits *inside* scopedWriteFS so an
-		// out-of-scope write is hard-denied before it can become a request.
-		if s.auth != nil && s.requests != nil && s.hasApprovalRules() {
-			sessionFS = newApprovalFS(sessionFS, s.requests, s.requiresApproval, id.IdentityName, s.bus)
-		}
-		// Part B per-identity write isolation: confine this session's writes to
-		// the docset roots it may publish to, so two agents sharing a lore can't
-		// write each other's docsets. Anonymous/unrecognized identities get no
-		// writable roots (fully read-only). No-op without an auth config.
-		if s.auth != nil {
-			sessionFS = newScopedWriteFS(sessionFS, s.writableDocsetRoots(id))
-		}
-		if s.sessionFSFn != nil {
-			sessionFS = s.sessionFSFn(id, sessionFS)
-		}
-		// Session CAS: track the hash of every file read (and written) so a
-		// later blind overwrite compare-and-swaps against the version the
-		// caller last saw, without naming a hash — an overwrite fails if the
-		// file changed since it was read. Outermost so it observes all reads;
-		// only meaningful (and only added) when the substrate is writable.
-		if !s.config.Readonly {
-			if w, ok := sessionFS.(vfs.WritableFS); ok {
-				sessionFS = newReadTrackingFS(w)
-			}
-		}
-
-		shell := shell.NewShell(sessionFS)
-		if s.config.DefaultCwd != "" {
-			shell.SetCwd(s.config.DefaultCwd)
-		}
-		// Per-docset / global write-conflict policy for overwrite verbs.
-		shell.SetConflictPolicyFn(s.writeConflictPolicy)
-
-		// Capability gating (Part B). Only applies when an auth config is
-		// present — without one (local `openlore .` or an embedded KB server
-		// that does its own scoping) the shell stays unrestricted. With auth,
-		// an unrecognized/anonymous identity is read-only; a recognized
-		// identity may write and publish within its docsets.
-		if s.auth != nil {
-			if id.IdentityName != "" {
-				allowed := []cmds.Action{cmds.ActionWrite, cmds.ActionPublish}
-				// An identity holding any approval capability may also see and
-				// use approve/reject (the exact capability is checked per
-				// request when the command runs).
-				if len(id.Capabilities) > 0 {
-					allowed = append(allowed, cmds.ActionApprove)
-				}
-				// spawn runs an external command as the OpenLore service
-				// user, so it's gated on an explicit `spawn` capability
-				// (Part D) — never granted to ordinary writers.
-				if hasCapability(id.Capabilities, "spawn") {
-					allowed = append(allowed, cmds.ActionSpawn)
-				}
-				shell.SetAllowedActions(allowed)
-			} else {
-				shell.SetAllowedActions(nil) // read-only (ActionRead implied)
-			}
-		}
-
-		// Set identity info as environment variables
-		if id.IdentityName != "" {
-			shell.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
-		}
-		// $HOME points at the identity's home docset (enables ~ expansion and
-		// `cd` with no arguments).
-		if id.HomeDir != "" {
-			shell.SetEnv("HOME", id.HomeDir)
-		}
-		if len(id.Capabilities) > 0 {
-			shell.SetEnv("OPENLORE_CAPABILITIES", strings.Join(id.Capabilities, ","))
-		}
-		// Expose the SSH user as the agent ID so commands like `kb` and
-		// the writable VFS can scope operations per-agent.
-		if id.User != "" {
-			shell.SetEnv("OPENLORE_USER", id.User)
-			shell.SetEnv("OPENLORE_AGENT_ID", id.User)
-		}
-		if id.LoreName != "" {
-			shell.SetEnv("OPENLORE_LORE", id.LoreName)
-			// Set writable docsets for publish scoping
-			if len(id.PublishDocsets) > 0 {
-				// Identity has explicit publish scope
-				shell.SetEnv("OPENLORE_DOCSETS", strings.Join(id.PublishDocsets, ","))
-			} else if s.auth != nil {
-				// Fall back to all docsets in lore
-				if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
-					shell.SetEnv("OPENLORE_DOCSETS", strings.Join(docsetNames, ","))
-				}
-			}
-		}
+		// Store the resolved identity on the session context so the shell is
+		// built from the same context-carried identity as MCP/HTTP callers —
+		// one identity resolution model, one scoping path across transports.
+		ctx := contextWithIdentity(sess.Context(), id)
+		sh := s.shellForContext(ctx)
 
 		cmd := sess.Command()
 		if len(cmd) > 0 {
 			cmdLine := joinCommand(cmd)
 			s.metrics.TotalCommands.Add(1)
-			exitCode := shell.ExecPipeline(cmdLine, sess, sess.Stderr(), sess)
+			exitCode := sh.ExecPipeline(cmdLine, sess, sess.Stderr(), sess)
 			sess.Exit(exitCode)
 			return
 		}
 
-		shell.RunInteractive(sess, sess, s.motd, "lore")
+		sh.RunInteractive(sess, sess, s.motd, "lore")
 		sess.Exit(0)
 	}
+}
+
+// buildSessionShell constructs a fully-configured shell scoped to the given
+// identity: a per-identity filesystem (lore FilteredView, approval gating,
+// write isolation, read-tracking CAS), capability-gated allowed actions, and
+// OPENLORE_* environment variables. This is the single source of truth for
+// per-identity scoping, shared by the SSH shell handler and the MCP/HTTP tool
+// handlers so all transports enforce the same access rules.
+func (s *Server) buildSessionShell(id Identity) *shell.Shell {
+	// Build per-session filesystem filtered by lore (the identity's docsets)
+	sessionFS := vfs.FileSystem(s.merge)
+	if id.LoreName != "" {
+		if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
+			allowed := make(map[string]bool)
+			for _, ds := range docsetNames {
+				allowed[ds] = true
+			}
+			sessionFS = s.merge.FilteredView(allowed)
+		}
+	}
+	// Part C approval gating: writes to gated paths become pending requests
+	// instead of committing. This wrapper sits *inside* scopedWriteFS so an
+	// out-of-scope write is hard-denied before it can become a request.
+	if s.authEnforced && s.requests != nil && s.hasApprovalRules() {
+		sessionFS = newApprovalFS(sessionFS, s.requests, s.requiresApproval, id.IdentityName, s.bus)
+	}
+	// canWrite is the single authority gate shared by the FS layer and the
+	// action layer: an identity may write only when auth is enforced, it is a
+	// named identity (not anonymous), and its token scope grants write. A WIF
+	// token narrowed to `read` (or any non-`full` scope) is read-only here even
+	// if the underlying identity is write-capable — narrowing wins, fail-closed.
+	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes)
+	// Part B per-identity write isolation: confine this session's writes to
+	// the docset roots it may publish to, so two agents sharing a lore can't
+	// write each other's docsets. Anonymous/unrecognized/read-scoped identities
+	// get no writable roots (fully read-only at the FS layer). No-op when auth
+	// is not enforced.
+	if s.authEnforced {
+		roots := s.writableDocsetRoots(id)
+		if !canWrite {
+			roots = nil
+		}
+		sessionFS = newScopedWriteFS(sessionFS, roots)
+	}
+	if s.sessionFSFn != nil {
+		sessionFS = s.sessionFSFn(id, sessionFS)
+	}
+	// Session CAS: track the hash of every file read (and written) so a
+	// later blind overwrite compare-and-swaps against the version the
+	// caller last saw, without naming a hash — an overwrite fails if the
+	// file changed since it was read. Outermost so it observes all reads;
+	// only meaningful (and only added) when the substrate is writable.
+	if !s.config.Readonly {
+		if w, ok := sessionFS.(vfs.WritableFS); ok {
+			sessionFS = newReadTrackingFS(w)
+		}
+	}
+
+	sh := shell.NewShell(sessionFS)
+	if s.config.DefaultCwd != "" {
+		sh.SetCwd(s.config.DefaultCwd)
+	}
+	// Per-docset / global write-conflict policy for overwrite verbs.
+	sh.SetConflictPolicyFn(s.writeConflictPolicy)
+
+	// Capability gating (Part B). Only applies when an auth config is
+	// present — without one (local `openlore .` or an embedded KB server
+	// that does its own scoping) the shell stays unrestricted. With auth,
+	// an unrecognized/anonymous identity is read-only; a recognized
+	// identity may write and publish within its docsets.
+	if s.authEnforced {
+		if canWrite {
+			allowed := []cmds.Action{cmds.ActionWrite, cmds.ActionPublish}
+			// An identity holding any approval capability may also see and
+			// use approve/reject (the exact capability is checked per
+			// request when the command runs).
+			if len(id.Capabilities) > 0 {
+				allowed = append(allowed, cmds.ActionApprove)
+			}
+			// spawn runs an external command as the OpenLore service
+			// user, so it's gated on an explicit `spawn` capability
+			// (Part D) — never granted to ordinary writers.
+			if hasCapability(id.Capabilities, "spawn") {
+				allowed = append(allowed, cmds.ActionSpawn)
+			}
+			sh.SetAllowedActions(allowed)
+		} else {
+			sh.SetAllowedActions(nil) // read-only (ActionRead implied)
+		}
+	}
+
+	// Set identity info as environment variables
+	if id.IdentityName != "" {
+		sh.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
+	}
+	// $HOME points at the identity's home docset (enables ~ expansion and
+	// `cd` with no arguments).
+	if id.HomeDir != "" {
+		sh.SetEnv("HOME", id.HomeDir)
+	}
+	if len(id.Capabilities) > 0 {
+		sh.SetEnv("OPENLORE_CAPABILITIES", strings.Join(id.Capabilities, ","))
+	}
+	// Expose the user as the agent ID so commands like `kb` and
+	// the writable VFS can scope operations per-agent.
+	if id.User != "" {
+		sh.SetEnv("OPENLORE_USER", id.User)
+		sh.SetEnv("OPENLORE_AGENT_ID", id.User)
+	}
+	if id.LoreName != "" {
+		sh.SetEnv("OPENLORE_LORE", id.LoreName)
+		// Set writable docsets for publish scoping
+		if len(id.PublishDocsets) > 0 {
+			// Identity has explicit publish scope
+			sh.SetEnv("OPENLORE_DOCSETS", strings.Join(id.PublishDocsets, ","))
+		} else {
+			// Fall back to all docsets in lore
+			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
+				sh.SetEnv("OPENLORE_DOCSETS", strings.Join(docsetNames, ","))
+			}
+		}
+	}
+
+	return sh
+}
+
+// anonymousIdentity returns the identity used for callers that present no
+// credential (keyless SSH, or an unauthenticated MCP/HTTP request). It mirrors
+// the keyless branches of resolveIdentity: the "default" lore when auth is
+// enforced, or full access when it is not.
+func (s *Server) anonymousIdentity() Identity {
+	id := Identity{
+		SessionID:   generateSessionID(),
+		ConnectedAt: time.Now(),
+	}
+	if s.authEnforced {
+		if _, ok := s.auth.Lore["default"]; ok {
+			id.LoreName = "default"
+			id.PathAccess = s.resolveLorePathAccess("default")
+		}
+	} else {
+		// Auth not enforced: full access
+		id.Scopes = []string{ScopeFull}
+		for name := range s.merge.mounts {
+			id.PathAccess = append(id.PathAccess, config.PathMapping{
+				Source:  "/" + name,
+				Display: "/" + name,
+			})
+		}
+	}
+	return id
+}
+
+// identityCtxKey is the context key under which every transport stores the
+// resolved caller Identity. SSH stores it after public-key/cert resolution;
+// the MCP/HTTP boundary stores it after bearer-token verification (Phase 1).
+type identityCtxKey struct{}
+
+// contextWithIdentity returns ctx carrying the resolved identity. Both the SSH
+// shell handler and the MCP/HTTP request boundary call this so that all
+// downstream scoping reads the identity from one place, regardless of
+// transport.
+func contextWithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, identityCtxKey{}, id)
+}
+
+// identityFromContext returns the caller identity previously stored in ctx by
+// the transport boundary. If none is present (no credential resolved) it falls
+// back to the anonymous identity — mirroring keyless SSH. This is the single
+// accessor used by both SSH and MCP/HTTP tool handling.
+func (s *Server) identityFromContext(ctx context.Context) Identity {
+	if id, ok := ctx.Value(identityCtxKey{}).(Identity); ok {
+		return id
+	}
+	return s.anonymousIdentity()
+}
+
+// shellForContext builds a per-identity shell from the identity carried in ctx.
+// It is the single factory used by both the SSH shell handler and the MCP/HTTP
+// tool handler, so every transport enforces the same per-identity scoping.
+func (s *Server) shellForContext(ctx context.Context) *shell.Shell {
+	return s.buildSessionShell(s.identityFromContext(ctx))
 }
 
 func joinCommand(parts []string) string {
@@ -721,7 +833,7 @@ func (s *Server) ListenAndServe() error {
 		}))
 	} else {
 		opts = append(opts, ssh.PublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
-			if s.config.UnknownIdentity == "deny" && s.auth != nil {
+			if s.config.UnknownIdentity == "deny" && s.authEnforced {
 				// Extract underlying key from certificates
 				matchKey := key
 				var cert *gossh.Certificate
@@ -809,18 +921,63 @@ func (s *Server) ListenAndServe() error {
 				ExtraHandlers: map[string]http.Handler{},
 			}
 
+			// Third-party license notices, served from the embedded legal
+			// filesystem so recipients of a distributed binary/image can read
+			// the attributions required by our dependencies' licenses.
+			if legalFS := assets.Legal(); legalFS != nil {
+				legalHandler := legal.Handler(legalFS)
+				httpCfg.ExtraHandlers["/legal"] = legalHandler
+				httpCfg.ExtraHandlers["/legal/"] = legalHandler
+				s.logger.Info("legal notices mounted", "path", "/legal", "http_port", s.config.HTTPPort)
+			}
+
+			// A single MCP server backs both the Streamable HTTP endpoint and
+			// the plain JSON HTTP API below. Its `shell` tool builds a
+			// per-identity scoped shell from the request context, so MCP/HTTP
+			// callers get the same lore/capability scoping as an SSH session.
+			var mcpServer *mcp.Server
+			if (s.config.MCPEnabled && s.config.MCPPath != "") || (s.config.APIEnabled && s.config.APIPath != "") {
+				mcpServer = NewMCPServer(s.fs, withMCPShellFactory(s.shellForContext))
+			}
+
 			// Mount the MCP-over-HTTP (Streamable HTTP) endpoint on the HTTP
 			// server at the configured path, so it reuses the same port/TLS as
 			// the front page (and any load balancer rule fronting it).
 			if s.config.MCPEnabled && s.config.MCPPath != "" {
 				mcpPath := "/" + strings.Trim(s.config.MCPPath, "/")
-				mcpServer := NewMCPServer(s.fs)
 				mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 					return mcpServer
 				}, nil)
-				httpCfg.ExtraHandlers[mcpPath] = mcpHandler
-				httpCfg.ExtraHandlers[mcpPath+"/"] = mcpHandler
+				// Posture-aware bearer auth (§4): identity from a verified token
+				// (or anonymous) is placed on the request context, which the
+				// Streamable transport carries into the tool handler.
+				h := s.authMiddleware(mcpHandler)
+				httpCfg.ExtraHandlers[mcpPath] = h
+				httpCfg.ExtraHandlers[mcpPath+"/"] = h
 				s.logger.Info("MCP endpoint mounted", "path", mcpPath, "http_port", s.config.HTTPPort)
+			}
+
+			// Mount the plain JSON HTTP API (backed by the same MCP server) at
+			// the configured path. It exposes the MCP tools over simple REST
+			// endpoints: POST {path}/shell and GET {path}/commands.
+			if s.config.APIEnabled && s.config.APIPath != "" {
+				apiPath := "/" + strings.Trim(s.config.APIPath, "/")
+				api := NewMCPHTTPAPI(mcpServer)
+				httpCfg.ExtraHandlers[apiPath+"/"] = s.authMiddleware(api.Handler(apiPath))
+				s.logger.Info("HTTP API mounted", "path", apiPath, "http_port", s.config.HTTPPort)
+			}
+
+			// Mount the OAuth token endpoint + JWKS when token auth is enabled
+			// (auth.tokens configured). This is the single mint step for login
+			// (authorization_code) and, later, WIF exchange (jwt-bearer).
+			if s.tokens != nil {
+				for path, h := range s.oauthRoutes() {
+					httpCfg.ExtraHandlers[path] = h
+				}
+				s.logger.Info("token endpoint mounted", "path", tokenPath, "http_port", s.config.HTTPPort)
+				s.logger.Info("authorize endpoint mounted", "path", authorizePath, "http_port", s.config.HTTPPort)
+				s.logger.Info("client registration mounted", "path", registrationPath, "http_port", s.config.HTTPPort)
+				s.logger.Info("oauth metadata mounted", "path", protectedResourceMetadataPath, "http_port", s.config.HTTPPort)
 			}
 
 			if s.passkeys != nil {
@@ -845,6 +1002,13 @@ func (s *Server) ListenAndServe() error {
 				}
 
 				passkeys.RegisterShellCommand(s.passkeys, baseURL)
+
+				// Wire the token-minting seam so passkey login can drive the
+				// OAuth authorization-code flow and resolve identity → lore for
+				// the browser cookie. Always set (not gated on token auth): the
+				// Server implements the full interface, and IssueAuthCode /
+				// CompleteAuthorize return ok=false when token auth is disabled.
+				s.passkeys.SetTokenIssuer(s)
 
 				httpCfg.Extenders = append(httpCfg.Extenders, s.passkeys)
 

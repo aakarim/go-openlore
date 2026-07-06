@@ -21,6 +21,10 @@ type mcpConfig struct {
 	instructions     string
 	shellDescription string
 	envVars          map[string]string
+	// shellFactory, when set, builds the shell for each `shell` tool call from
+	// the request context (used to scope the shell per authenticated identity).
+	// When nil, a shell is built from the fixed filesystem plus envVars.
+	shellFactory func(ctx context.Context) *shell.Shell
 }
 
 // WithMCPServerName overrides the MCP server name reported in the initialize
@@ -44,6 +48,14 @@ func WithMCPShellDescription(desc string) MCPOption {
 // execution.
 func WithMCPEnvVars(vars map[string]string) MCPOption {
 	return func(c *mcpConfig) { c.envVars = vars }
+}
+
+// withMCPShellFactory sets a per-request shell factory. Used internally by the
+// server to scope the `shell` tool to the authenticated identity resolved from
+// the request context. Unexported: external callers scope by passing their own
+// filesystem to NewMCPServer instead.
+func withMCPShellFactory(fn func(ctx context.Context) *shell.Shell) MCPOption {
+	return func(c *mcpConfig) { c.shellFactory = fn }
 }
 
 // NewMCPServer creates an MCP server backed by the given filesystem. The
@@ -76,7 +88,7 @@ func NewMCPServer(fs vfs.FileSystem, opts ...MCPOption) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "shell",
 		Description: shellDesc,
-	}, newMCPShellHandler(fs, cfg.envVars))
+	}, newMCPShellHandler(fs, cfg.envVars, cfg.shellFactory))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_commands",
@@ -90,7 +102,7 @@ type mcpShellInput struct {
 	Command string `json:"command" jsonschema:"The bash command to execute (e.g. grep -r auth /docs)"`
 }
 
-func newMCPShellHandler(fs vfs.FileSystem, envVars map[string]string) mcp.ToolHandlerFor[mcpShellInput, any] {
+func newMCPShellHandler(fs vfs.FileSystem, envVars map[string]string, factory func(ctx context.Context) *shell.Shell) mcp.ToolHandlerFor[mcpShellInput, any] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input mcpShellInput) (*mcp.CallToolResult, any, error) {
 		if input.Command == "" {
 			return &mcp.CallToolResult{
@@ -99,13 +111,20 @@ func newMCPShellHandler(fs vfs.FileSystem, envVars map[string]string) mcp.ToolHa
 			}, nil, nil
 		}
 
-		shell := shell.NewShell(fs)
-		for k, v := range envVars {
-			shell.SetEnv(k, v)
+		var sh *shell.Shell
+		if factory != nil {
+			// Per-identity scoped shell (built from the request context).
+			sh = factory(ctx)
+		} else {
+			// Fixed-filesystem shell (caller scopes by choosing fs).
+			sh = shell.NewShell(fs)
+			for k, v := range envVars {
+				sh.SetEnv(k, v)
+			}
 		}
 
 		var stdout, stderr bytes.Buffer
-		exitCode := shell.ExecPipeline(input.Command, &stdout, &stderr, nil)
+		exitCode := sh.ExecPipeline(input.Command, &stdout, &stderr, nil)
 
 		result := stdout.String()
 		if stderr.Len() > 0 {

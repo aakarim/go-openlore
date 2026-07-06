@@ -141,9 +141,6 @@ func hashHex(b []byte) string {
 // requiresApproval reports whether a write to virtual path p is gated, and by
 // which capability. It scans every docset's RequiresApproval rules.
 func (s *Server) requiresApproval(p string) (string, bool) {
-	if s.auth == nil {
-		return "", false
-	}
 	clean := vfs.CleanPath(p)
 	for _, ds := range s.auth.Docsets {
 		for _, rule := range ds.RequiresApproval {
@@ -159,9 +156,6 @@ func (s *Server) requiresApproval(p string) (string, bool) {
 
 // hasApprovalRules reports whether any docset declares an approval rule.
 func (s *Server) hasApprovalRules() bool {
-	if s.auth == nil {
-		return false
-	}
 	for _, ds := range s.auth.Docsets {
 		if len(ds.RequiresApproval) > 0 {
 			return true

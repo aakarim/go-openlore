@@ -67,6 +67,8 @@ The killer feature: bake your docs into a single distributable binary.
 
 - Read `writes.md` to learn how OpenLore can be a safe, writable knowledge layer
 - Read `mcp.md` to connect MCP-aware clients (Claude Desktop, Cowork, etc.)
+- Read `workload-identity-federation.md` to let CI/agents authenticate to
+  `/mcp` and `/api` with short-lived IdP tokens instead of long-lived keys
 - Run `teach` to learn how to set up OpenLore for your project
 - Run `agents` to get an AGENTS.md snippet for your AI agents
 - Visit https://github.com/aakarim/go-openlore for full documentation

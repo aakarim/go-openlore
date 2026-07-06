@@ -12,10 +12,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/aakarim/go-openlore/assets"
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/internal/mcpserver"
 	openlore "github.com/aakarim/go-openlore/pkg/openlore"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -145,7 +145,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			server := mcpserver.New(vfs)
+			server := openlore.NewMCPServer(vfs)
 			if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 				fmt.Fprintf(os.Stderr, "mcp server error: %v\n", err)
 				os.Exit(1)
@@ -297,6 +297,81 @@ func main() {
 
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown identity command: %s\n", os.Args[2])
+				os.Exit(1)
+			}
+
+		case "token":
+			if len(os.Args) < 3 {
+				fmt.Fprintf(os.Stderr, "Usage: openlore token <command>\n\n")
+				fmt.Fprintf(os.Stderr, "Commands:\n")
+				fmt.Fprintf(os.Stderr, "  mint     Mint an access token for an identity (debug / local PAT)\n")
+				fmt.Fprintf(os.Stderr, "  verify   Verify an access token and print its claims\n")
+				os.Exit(1)
+			}
+
+			switch os.Args[2] {
+			case "mint":
+				tokCmd := flag.NewFlagSet("token mint", flag.ExitOnError)
+				identity := tokCmd.String("identity", "", "identity name = token `sub` (required)")
+				scope := tokCmd.String("scope", openlore.ScopeFull, "token scope")
+				ttl := tokCmd.Duration("ttl", 30*time.Minute, "access token lifetime")
+				configPath := tokCmd.String("config", "./openlore.yml", "path to openlore.yml (holds the tokens block + data dir)")
+				tokCmd.Parse(os.Args[3:])
+
+				if *identity == "" {
+					tokCmd.Usage()
+					os.Exit(1)
+				}
+				cfg, err := config.New(config.WithConfigFile(*configPath))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: loading %s: %v\n", *configPath, err)
+					os.Exit(1)
+				}
+				issuer, err := openlore.NewIssuerFromConfig(cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+				token, exp, err := issuer.Mint(*identity, *scope, *ttl)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: minting token: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(token)
+				fmt.Fprintf(os.Stderr, "sub=%s scope=%s expires=%s\n", *identity, *scope, exp.Format(time.RFC3339))
+				os.Exit(0)
+
+			case "verify":
+				tokCmd := flag.NewFlagSet("token verify", flag.ExitOnError)
+				configPath := tokCmd.String("config", "./openlore.yml", "path to openlore.yml (holds the tokens block + data dir)")
+				tokCmd.Parse(os.Args[3:])
+
+				args := tokCmd.Args()
+				if len(args) != 1 {
+					fmt.Fprintf(os.Stderr, "Usage: openlore token verify [flags] <token>\n")
+					os.Exit(1)
+				}
+				cfg, err := config.New(config.WithConfigFile(*configPath))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: loading %s: %v\n", *configPath, err)
+					os.Exit(1)
+				}
+				issuer, err := openlore.NewIssuerFromConfig(cfg)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+				claims, err := issuer.Verify(args[0])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "invalid: %v\n", err)
+					os.Exit(1)
+				}
+				out, _ := json.MarshalIndent(claims.Raw, "", "  ")
+				fmt.Println(string(out))
+				os.Exit(0)
+
+			default:
+				fmt.Fprintf(os.Stderr, "Unknown token command: %s\n", os.Args[2])
 				os.Exit(1)
 			}
 		}

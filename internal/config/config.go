@@ -31,8 +31,12 @@ type Config struct {
 	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
 	// MCPEnabled controls whether the always-on MCP-over-HTTP endpoint runs.
 	// Default true. The endpoint is mounted at MCPPath on the HTTP server.
-	MCPEnabled   bool
-	MCPPath      string
+	MCPEnabled bool
+	MCPPath    string
+	// APIEnabled controls whether the plain JSON HTTP API (backed by the MCP
+	// server) runs. Default true. It is mounted at APIPath on the HTTP server.
+	APIEnabled   bool
+	APIPath      string
 	TLSCert      string
 	TLSKey       string
 	CAKeysFile   string
@@ -58,6 +62,20 @@ type Config struct {
 
 	// MaxJobs bounds concurrent async `spawn` jobs (Part D). Default 8.
 	MaxJobs int
+
+	// Tokens configures bearer-token issuance/verification for the MCP + HTTP
+	// API. This is server infrastructure (issuer identity, audience, signing
+	// key, TTLs) — not per-lore access policy — so it lives in openlore.yml
+	// alongside passkeys, not in lore.json. When nil, token auth is disabled
+	// and the MCP/HTTP endpoints behave as anonymous callers (Phase 0).
+	Tokens *AuthTokensConfig
+
+	// OIDCIssuers are external IdPs whose JWTs may be exchanged for OpenLore
+	// tokens at the token endpoint via the jwt-bearer grant (workload identity
+	// federation). When set, each issuer's JWKS is fetched (discovery) and its
+	// assertions are verified and mapped to identities. Server infrastructure,
+	// hence openlore.yml.
+	OIDCIssuers []OIDCIssuer
 
 	// Track sources for conflict detection.
 	configFileLoaded   bool
@@ -96,6 +114,29 @@ type AuthConfig struct {
 	Docsets         map[string]DocsetSpec `json:"docsets"`
 	Lore            map[string][]string   `json:"lore"`
 	Identities      []AuthIdentity        `json:"identities"`
+}
+
+// AuthTokensConfig controls the bearer-token issuer for the MCP + HTTP API.
+// It is server infrastructure and loaded from openlore.yml (hence yaml tags).
+type AuthTokensConfig struct {
+	Issuer     string `yaml:"issuer" json:"issuer,omitempty"`           // `iss` claim + JWKS base
+	Audience   string `yaml:"audience" json:"audience,omitempty"`       // required `aud`; one per instance
+	AccessTTL  string `yaml:"access_ttl" json:"access_ttl,omitempty"`   // duration string, default 30m
+	RefreshTTL string `yaml:"refresh_ttl" json:"refresh_ttl,omitempty"` // duration string, default 720h
+}
+
+// OIDCIssuer is an external IdP trusted for WIF token exchange. Server
+// infrastructure, loaded from openlore.yml.
+type OIDCIssuer struct {
+	IssuerURL string   `yaml:"issuer_url" json:"issuer_url"`
+	JWKS      JWKSSpec `yaml:"jwks" json:"jwks,omitempty"`
+}
+
+// JWKSSpec configures how an OIDC issuer's public keys are obtained. Only
+// "discovery" (fetch from the issuer's .well-known/openid-configuration) is
+// supported today; empty defaults to discovery.
+type JWKSSpec struct {
+	Mode string `yaml:"mode" json:"mode,omitempty"` // "discovery" (default)
 }
 
 // DocsetSpec defines a named set of path mappings.
@@ -181,6 +222,28 @@ type AuthIdentity struct {
 	// e.g. "approve@oncall". Used to authorize `approve`/`reject` of pending
 	// requests whose required capability matches.
 	Capabilities []string `json:"capabilities,omitempty"`
+
+	// Match lists the token-claim predicates that resolve TO this identity.
+	// Resolution criteria live on the identity they select (rather than a
+	// separate rule list) since every rule maps to exactly one identity. The
+	// human case needs no entry: a token whose `sub` equals this identity's
+	// Name resolves here implicitly. WIF exchanges (jwt-bearer) match on
+	// `sub`/`sub_prefix`/`aud`/`claims` entries with narrowing `scope`/`ttl`.
+	Match []IdentityMatch `json:"match,omitempty"`
+}
+
+// IdentityMatch is a token-claim predicate attached to an AuthIdentity. When a
+// verified assertion's claims satisfy it (all specified fields must hold), the
+// assertion resolves to the enclosing identity. Exact `sub` takes precedence
+// over `sub_prefix`/`aud`/`claims` pattern matches; `scope` narrows and `ttl`
+// caps the brokered OpenLore token.
+type IdentityMatch struct {
+	Sub       string            `json:"sub,omitempty"`
+	SubPrefix string            `json:"sub_prefix,omitempty"`
+	Aud       string            `json:"aud,omitempty"`
+	Claims    map[string]string `json:"claims,omitempty"`
+	Scope     string            `json:"scope,omitempty"` // narrowing scope for matched tokens (WIF)
+	TTL       string            `json:"ttl,omitempty"`   // caps brokered token TTL (WIF)
 }
 
 // Option is a functional option for configuring the server.
@@ -200,6 +263,7 @@ type fileConfig struct {
 	HTTPPort            int            `yaml:"http_port"`
 	ExternalSSHPort     int            `yaml:"external_ssh_port"`
 	MCP                 *mcpYAML       `yaml:"mcp"`
+	API                 *apiYAML       `yaml:"api"`
 	TLSCert             string         `yaml:"tls_cert"`
 	TLSKey              string         `yaml:"tls_key"`
 	CAKeysFile          string         `yaml:"ca_keys_file"`
@@ -212,9 +276,18 @@ type fileConfig struct {
 	Readonly            *bool          `yaml:"readonly"`
 	WriteConflictPolicy string         `yaml:"write_conflict_policy"`
 	MaxJobs             int            `yaml:"max_jobs"`
+	// Tokens + OIDCIssuers are server infrastructure (bearer-token issuance for
+	// the MCP + HTTP API), hence configured here rather than in lore.json.
+	Tokens      *AuthTokensConfig `yaml:"tokens"`
+	OIDCIssuers []OIDCIssuer      `yaml:"oidc_issuers"`
 }
 
 type mcpYAML struct {
+	Enabled *bool  `yaml:"enabled"`
+	Path    string `yaml:"path"`
+}
+
+type apiYAML struct {
 	Enabled *bool  `yaml:"enabled"`
 	Path    string `yaml:"path"`
 }
@@ -244,6 +317,8 @@ func New(opts ...Option) (Config, error) {
 		MetricsPort:         3000,
 		MCPEnabled:          true,
 		MCPPath:             "/mcp",
+		APIEnabled:          true,
+		APIPath:             "/api",
 		HostKeyPath:         ".ssh/openlore_ed25519",
 		AllowKeyless:        true,
 		UnknownIdentity:     "allow",
@@ -381,8 +456,20 @@ func WithConfigFile(path string) Option {
 		}
 		applyPasskeysConfig(cfg, fc.Passkeys)
 		applyMCPConfig(cfg, fc.MCP)
+		applyAPIConfig(cfg, fc.API)
+		applyTokensConfig(cfg, fc.Tokens, fc.OIDCIssuers)
 
 		return nil
+	}
+}
+
+// applyTokensConfig maps bearer-token server settings from the file config.
+func applyTokensConfig(cfg *Config, tokens *AuthTokensConfig, oidc []OIDCIssuer) {
+	if tokens != nil {
+		cfg.Tokens = tokens
+	}
+	if len(oidc) > 0 {
+		cfg.OIDCIssuers = oidc
 	}
 }
 
@@ -481,6 +568,8 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			}
 			applyPasskeysConfig(cfg, fc.Passkeys)
 			applyMCPConfig(cfg, fc.MCP)
+			applyAPIConfig(cfg, fc.API)
+			applyTokensConfig(cfg, fc.Tokens, fc.OIDCIssuers)
 		}
 
 		// MOTD fallback: only set if nothing else has set it yet
@@ -684,6 +773,36 @@ func WithMCPPath(path string) Option {
 func WithMCPEnabled(enabled bool) Option {
 	return func(cfg *Config) error {
 		cfg.MCPEnabled = enabled
+		return nil
+	}
+}
+
+// applyAPIConfig merges an apiYAML into the config.
+func applyAPIConfig(cfg *Config, a *apiYAML) {
+	if a == nil {
+		return
+	}
+	if a.Enabled != nil {
+		cfg.APIEnabled = *a.Enabled
+	}
+	if a.Path != "" {
+		cfg.APIPath = a.Path
+	}
+}
+
+// WithAPIPath sets the path the JSON HTTP API is mounted at on the HTTP server
+// (e.g. "/api").
+func WithAPIPath(path string) Option {
+	return func(cfg *Config) error {
+		cfg.APIPath = path
+		return nil
+	}
+}
+
+// WithAPIEnabled toggles the JSON HTTP API.
+func WithAPIEnabled(enabled bool) Option {
+	return func(cfg *Config) error {
+		cfg.APIEnabled = enabled
 		return nil
 	}
 }

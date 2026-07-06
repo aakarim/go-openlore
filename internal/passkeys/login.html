@@ -55,6 +55,10 @@
 <script>
 const params = new URLSearchParams(window.location.search);
 const redirect = params.get('redirect') || '/lore/';
+// authz is set when this page is reached via the OAuth /authorize flow. When
+// present, the server returns a redirect back to the client's callback with an
+// auth code instead of just setting the browser cookie.
+const authz = params.get('authz') || '';
 
 async function init() {
   try {
@@ -112,7 +116,10 @@ async function startLogin() {
 
     status.innerHTML = '<span class="spinner"></span> Verifying…';
 
-    const finishResp = await fetch('/passkey/login/finish', {
+    const finishURL = authz
+      ? `/passkey/login/finish?authz=${encodeURIComponent(authz)}`
+      : '/passkey/login/finish';
+    const finishResp = await fetch(finishURL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(assertionData),
@@ -120,7 +127,14 @@ async function startLogin() {
     if (!finishResp.ok) throw new Error(await finishResp.text());
 
     status.innerHTML = '<span class="success">✓ Authenticated!</span>';
-    setTimeout(() => { window.location.href = redirect; }, 500);
+    // OAuth flow: follow the callback redirect the server returns. Otherwise
+    // fall back to the docs browser (or the ?redirect target).
+    let dest = redirect;
+    try {
+      const body = await finishResp.json();
+      if (body && body.redirect) dest = body.redirect;
+    } catch {}
+    setTimeout(() => { window.location.href = dest; }, 500);
   } catch (err) {
     if (err.name === 'NotAllowedError') {
       status.innerHTML = '<span class="error">Authentication was cancelled.</span>';
