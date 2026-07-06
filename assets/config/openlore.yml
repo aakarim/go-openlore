@@ -54,3 +54,5 @@ folders:
     path: ./published/miles
   - name: zeb
     path: ./published/zeb
+  - name: adil
+    path: ./published/adil

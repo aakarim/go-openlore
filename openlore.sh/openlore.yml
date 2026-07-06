@@ -5,14 +5,22 @@ external_ssh_port: 22
 http_port: 8080
 metrics_port: 0
 default_cwd: /
-auth_file: ./lore.json
 
-# Whole-file overwrite conflict policy: hash (compare-and-swap, default) or
-# last_write_wins. Overridable per docset in lore.json.
+auth_file: ./lore.json
+data_dir: ./data
+
+# How whole-file overwrites (>, tee, sed -i, publish) defend against concurrent
+# writers. "hash" (the default) makes them compare-and-swap: a write that would
+# clobber a change made since the file was read is rejected. "last_write_wins"
+# makes overwrites unconditional. Append (>>) and patch are always CAS. Can be
+# overridden per docset via write_conflict_policy in lore.json.
 write_conflict_policy: hash
 
-# Max concurrent async `spawn` jobs (granted only to identities with the "spawn"
-# capability). In-flight jobs are in-memory and lost on restart.
+# Max concurrent async `spawn` jobs. The `spawn` command (granted only to
+# identities holding the "spawn" capability) runs an external command and writes
+# its output back into the lore in a background goroutine; this bounds how many
+# run at once. In-flight jobs are in-memory and lost on restart (drained briefly
+# on shutdown). Default 8.
 max_jobs: 8
 
 mcp:
@@ -42,3 +50,9 @@ folders:
     path: ./published/ray
   - name: razer
     path: ./published/razer
+  - name: miles
+    path: ./published/miles
+  - name: zeb
+    path: ./published/zeb
+  - name: adil
+    path: ./published/adil
