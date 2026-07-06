@@ -50,7 +50,17 @@ func TestIdentityFromContext_AnonymousIsNotFull(t *testing.T) {
 func TestIdentityFromContext_NoAuthIsFull(t *testing.T) {
 	merge := NewMergeFS()
 	merge.Mount("public", NewFSAdapter(nil))
-	s := &Server{merge: merge}
+	// Unenforced mode: NewServer synthesizes a `public` docset at "/" so every
+	// consumer reuses the normal docset machinery. auth is always non-nil.
+	s := &Server{
+		merge: merge,
+		auth: &config.AuthConfig{
+			Docsets: map[string]config.DocsetSpec{
+				"public": {Paths: []config.PathMapping{{Source: "/", Display: "/"}}},
+			},
+			Lore: map[string][]string{"default": {"public"}},
+		},
+	}
 
 	got := s.identityFromContext(context.Background())
 	if len(got.Scopes) != 1 || got.Scopes[0] != ScopeFull {

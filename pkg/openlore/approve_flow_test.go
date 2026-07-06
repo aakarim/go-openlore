@@ -41,7 +41,6 @@ func approveFlowFixture(t *testing.T, gated map[string]string) (proposer *shell.
 	af := newApprovalFS(base, store, decide, "claude", nil)
 	scoped := newScopedWriteFS(af, []string{"/ops"})
 	proposer = shell.NewShell(scoped)
-	proposer.SetEnv("OPENLORE_DOCSETS", "ops")
 	return proposer, store, base
 }
 

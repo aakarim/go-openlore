@@ -28,6 +28,11 @@ type Shell struct {
 	// nil means "use the default" (vfs.PolicyHash). The server sets this to a
 	// per-docset resolver; standalone shells get the default.
 	conflictPolicyFn func(resolvedPath string) vfs.WriteConflictPolicy
+	// docsets and publishTargets are the per-session views the host computes
+	// from the identity's lore. Read by `lore docsets` and `publish`
+	// respectively. nil for a standalone shell.
+	docsets        []cmds.DocsetInfo
+	publishTargets []cmds.PublishTarget
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -73,6 +78,18 @@ func (s *Shell) WriteConflictPolicy(resolvedPath string) vfs.WriteConflictPolicy
 	}
 	return s.conflictPolicyFn(resolvedPath)
 }
+
+// SetDocsets installs the per-session docset views surfaced by `lore docsets`.
+func (s *Shell) SetDocsets(d []cmds.DocsetInfo) { s.docsets = d }
+
+// Docsets reports the per-session docset views. Implements CmdContext.
+func (s *Shell) Docsets() []cmds.DocsetInfo { return s.docsets }
+
+// SetPublishTargets installs the per-session publish inboxes used by `publish`.
+func (s *Shell) SetPublishTargets(t []cmds.PublishTarget) { s.publishTargets = t }
+
+// PublishTargets reports the per-session publish inboxes. Implements CmdContext.
+func (s *Shell) PublishTargets() []cmds.PublishTarget { return s.publishTargets }
 
 // --- CmdContext interface implementation ---
 

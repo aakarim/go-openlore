@@ -98,6 +98,8 @@ func init() {
 	Register("spawn", CmdSpawn)
 	// identity
 	Register("whoami", CmdWhoami)
+	// introspection
+	Register("lore", CmdLore)
 }
 
 // Register adds a command to the registry.

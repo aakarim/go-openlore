@@ -354,6 +354,7 @@ func (s *Server) identityFromAuth(ident config.AuthIdentity) Identity {
 		PublishDocsets: ident.Publish,
 		Capabilities:   ident.Capabilities,
 		HomeDir:        s.resolveHomeDir(ident.Home),
+		HomeDocset:     ident.Home,
 		Scopes:         []string{ScopeFull},
 		SessionID:      generateSessionID(),
 		ConnectedAt:    time.Now(),

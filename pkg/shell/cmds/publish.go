@@ -10,62 +10,22 @@ import (
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// PublishTarget is a writable docset: its logical name (the first path
-// segment used in `publish /<name>/<file>`) and the per-docset size cap.
-type PublishTarget struct {
-	Name        string
-	MaxFileSize int64
-}
-
-// defaultMaxPublishSize is used when a target registers MaxFileSize <= 0.
+// defaultMaxPublishSize is used when a target has MaxFileSize <= 0.
 const defaultMaxPublishSize int64 = 2_621_440 // 2.5 MiB
 
-// Package-level publish state. Populated by the server at startup via
-// RegisterPublishTarget and PublishBaseURL.
-var (
-	PublishTargets []PublishTarget
-	PublishBaseURL string
-)
+// PublishBaseURL is the base URL prefixed to a published path in the command's
+// success output. Populated by the server at startup.
+var PublishBaseURL string
 
-// RegisterPublishTarget registers a writable docset. Append-only.
-func RegisterPublishTarget(name string, maxFileSize int64) {
-	PublishTargets = append(PublishTargets, PublishTarget{
-		Name:        name,
-		MaxFileSize: maxFileSize,
-	})
-}
-
-// findPublishTarget returns the registered target for a docset name.
-func findPublishTarget(name string) (PublishTarget, bool) {
-	for _, t := range PublishTargets {
-		if t.Name == name {
-			return t, true
-		}
-	}
-	return PublishTarget{}, false
-}
-
-// CmdPublish writes stdin to a file inside a writable docset. The commit goes
+// CmdPublish writes stdin to a file inside a publish inbox. The commit goes
 // through the session filesystem (`WriteFile`), so it inherits the same
-// per-identity write scoping, atomic CAS, and (later) approval gating as every
-// other write verb — there is no longer a separate direct-to-disk path. The
-// session's writable docsets are advertised via the OPENLORE_DOCSETS env var
-// (set by the server from the identity's `publish` list) and used here only for
-// the usage listing and per-docset size cap; the filesystem is the authority on
-// whether the write is actually permitted.
+// per-identity write scoping, atomic CAS, and approval gating as every other
+// write verb — there is no longer a separate direct-to-disk path. The session's
+// publish inboxes come from the host via CmdContext.PublishTargets and are used
+// here only for the usage listing and per-docset size cap; the filesystem is
+// the authority on whether the write is actually permitted.
 func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
-	// Resolve the session's writable docsets: the intersection of the
-	// identity's OPENLORE_DOCSETS and the registered publish targets.
-	var writable []PublishTarget
-	for _, name := range strings.Split(ctx.GetEnv("OPENLORE_DOCSETS"), ",") {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if t, ok := findPublishTarget(name); ok {
-			writable = append(writable, t)
-		}
-	}
+	writable := ctx.PublishTargets()
 
 	if len(writable) == 0 {
 		fmt.Fprintln(errW, "No writable paths available to you.")

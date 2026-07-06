@@ -50,6 +50,7 @@ type Identity struct {
 	PublishDocsets []string             // writable docsets (nil = all in lore)
 	Capabilities   []string             // approval capabilities held (Part C)
 	HomeDir        string               // display path of the identity's home docset ($HOME); empty = none
+	HomeDocset     string               // name of the identity's home docset; empty = none
 	Scopes         []string             // token scopes narrowing authority; {ScopeFull} = full authority
 }
 

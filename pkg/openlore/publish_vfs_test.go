@@ -16,13 +16,6 @@ import (
 // publish to a docset the session may *see* but not *write* is denied without
 // touching disk.
 func TestPublish_GoesThroughScopedVFS(t *testing.T) {
-	// Reset the package-global publish registry for a deterministic test.
-	saved := cmds.PublishTargets
-	cmds.PublishTargets = nil
-	t.Cleanup(func() { cmds.PublishTargets = saved })
-	cmds.RegisterPublishTarget("jared", 0)
-	cmds.RegisterPublishTarget("claw", 0)
-
 	dir := t.TempDir()
 	base := NewDirFS(dir, config.FilesConfig{})
 	if err := base.SetWriteable(); err != nil {
@@ -37,7 +30,7 @@ func TestPublish_GoesThroughScopedVFS(t *testing.T) {
 	// Session can see both docsets but may only write /jared.
 	fs := newScopedWriteFS(base, []string{"/jared"})
 	sh := shell.NewShell(fs)
-	sh.SetEnv("OPENLORE_DOCSETS", "jared,claw")
+	sh.SetPublishTargets([]cmds.PublishTarget{{Name: "jared"}, {Name: "claw"}})
 
 	// In-scope publish commits and reads back through the VFS.
 	if out, errs, code := run(sh, "echo hello | publish /jared/topic.md"); code != 0 {

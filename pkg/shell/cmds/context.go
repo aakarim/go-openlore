@@ -27,4 +27,43 @@ type CmdContext interface {
 	// the given resolved path. Defaults to vfs.PolicyHash (compare-and-swap)
 	// when the host has not configured a resolver.
 	WriteConflictPolicy(resolvedPath string) vfs.WriteConflictPolicy
+	// Docsets reports the docsets this session can access, with their display
+	// paths, direct writability, and attributes. Used by `lore docsets`. The
+	// host (server) computes this once per session; a standalone shell returns
+	// nil.
+	Docsets() []DocsetInfo
+	// PublishTargets reports the publish inboxes this session may publish to,
+	// with their per-docset size caps. Used by `publish`. The host computes this
+	// once per session; a standalone shell returns nil.
+	PublishTargets() []PublishTarget
+}
+
+// DocsetInfo describes one docset a session can access. It is the per-session
+// view surfaced by `lore docsets` — the host resolves it from the identity's
+// lore at session creation.
+type DocsetInfo struct {
+	// Name is the docset's logical name (its key in the auth config).
+	Name string
+	// Paths are the docset's display (virtual) paths in the filesystem.
+	Paths []string
+	// Writable reports whether this session may write to the docset directly
+	// with the normal write verbs (r vs rw). This is the FS-authoritative
+	// answer, independent of any publish inbox.
+	Writable bool
+	// Home reports whether this docset is the session's home docset ($HOME).
+	Home bool
+	// HasPublish reports whether the docset has a publish inbox (publish_dir).
+	// It says nothing about the inbox path or size — that lives in PublishTarget.
+	HasPublish bool
+	// Approval reports whether the docset declares any requires_approval rules.
+	// Gating can be path-scoped, so this means "some or all writes may be
+	// gated," not "every write is gated."
+	Approval bool
+}
+
+// PublishTarget is a writable publish inbox: its logical docset name (the first
+// path segment used in `publish /<name>/<file>`) and the per-docset size cap.
+type PublishTarget struct {
+	Name        string
+	MaxFileSize int64
 }

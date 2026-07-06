@@ -136,13 +136,17 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		if auth.DefaultCwd != "" {
 			s.config.DefaultCwd = auth.DefaultCwd
 		}
-
-		// Register writable docsets for the publish command
-		for name, ds := range auth.Docsets {
-			if ds.PublishDir != "" {
-				cmds.RegisterPublishTarget(name, ds.MaxPublishSize)
-			}
+	} else {
+		// No auth file: run in trusted/unenforced mode as a single `public`
+		// docset rooted at "/", with any folder mounts folded in. Every
+		// consumer (resolveLorePathAccess, sessionDocsets) then reuses the
+		// normal docset machinery instead of special-casing unenforced mode.
+		paths := []config.PathMapping{{Source: "/", Display: "/"}}
+		for _, f := range cfg.Folders {
+			paths = append(paths, config.PathMapping{Source: "/" + f.Name, Display: "/" + f.Name})
 		}
+		s.auth.Docsets = map[string]config.DocsetSpec{"public": {Paths: paths}}
+		s.auth.Lore = map[string][]string{"default": {"public"}}
 	}
 
 	// Collect docset root display paths so DirFS.Mkdir can enforce the
@@ -375,6 +379,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				id.PublishDocsets = src.PublishDocsets
 				id.Capabilities = src.Capabilities
 				id.HomeDir = src.HomeDir
+				id.HomeDocset = src.HomeDocset
 				id.Scopes = src.Scopes
 				matched = true
 				break
@@ -412,14 +417,10 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 			id.PathAccess = s.resolveLorePathAccess("default")
 		}
 	} else {
-		// No auth config at all: full access
+		// Auth not enforced: full access to the synthetic `public` docset.
+		id.LoreName = "default"
+		id.PathAccess = s.resolveLorePathAccess("default")
 		id.Scopes = []string{ScopeFull}
-		for name := range s.merge.mounts {
-			id.PathAccess = append(id.PathAccess, config.PathMapping{
-				Source:  "/" + name,
-				Display: "/" + name,
-			})
-		}
 	}
 
 	return id
@@ -611,9 +612,12 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 // per-identity scoping, shared by the SSH shell handler and the MCP/HTTP tool
 // handlers so all transports enforce the same access rules.
 func (s *Server) buildSessionShell(id Identity) *shell.Shell {
-	// Build per-session filesystem filtered by lore (the identity's docsets)
+	// Build per-session filesystem filtered by lore (the identity's docsets).
+	// Only when auth is enforced: in unenforced/trusted mode the session sees
+	// the whole merge FS (all mounts), so we must not run FilteredView (which
+	// would drop folder mounts not named after the synthetic `public` docset).
 	sessionFS := vfs.FileSystem(s.merge)
-	if id.LoreName != "" {
+	if s.authEnforced && id.LoreName != "" {
 		if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
 			allowed := make(map[string]bool)
 			for _, ds := range docsetNames {
@@ -693,6 +697,11 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 		}
 	}
 
+	// Per-session docset views for `lore docsets` and publish inboxes for
+	// `publish`. Computed once here, where the access authority lives.
+	sh.SetDocsets(s.sessionDocsets(id))
+	sh.SetPublishTargets(s.sessionPublishTargets(id))
+
 	// Set identity info as environment variables
 	if id.IdentityName != "" {
 		sh.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
@@ -713,19 +722,107 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	}
 	if id.LoreName != "" {
 		sh.SetEnv("OPENLORE_LORE", id.LoreName)
-		// Set writable docsets for publish scoping
-		if len(id.PublishDocsets) > 0 {
-			// Identity has explicit publish scope
-			sh.SetEnv("OPENLORE_DOCSETS", strings.Join(id.PublishDocsets, ","))
-		} else {
-			// Fall back to all docsets in lore
-			if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
-				sh.SetEnv("OPENLORE_DOCSETS", strings.Join(docsetNames, ","))
-			}
-		}
 	}
 
 	return sh
+}
+
+// sessionDocsets resolves the docsets this session can access, with their
+// display paths, direct writability, and attributes — the per-session view
+// surfaced by `lore docsets`. Docsets are returned in the order they appear in
+// the identity's lore spec.
+func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
+	if id.LoreName == "" {
+		return nil
+	}
+	docsetNames, ok := s.auth.Lore[id.LoreName]
+	if !ok {
+		return nil
+	}
+	writable := s.writableDocsetNames(id)
+	var out []cmds.DocsetInfo
+	for _, name := range docsetNames {
+		ds, ok := s.auth.Docsets[name]
+		if !ok {
+			continue
+		}
+		var paths []string
+		for _, pm := range ds.Paths {
+			display := pm.Display
+			if display == "" {
+				display = pm.Source
+			}
+			paths = append(paths, vfs.CleanPath(display))
+		}
+		out = append(out, cmds.DocsetInfo{
+			Name:       name,
+			Paths:      paths,
+			Writable:   writable[name],
+			Home:       name == id.HomeDocset,
+			HasPublish: ds.PublishDir != "",
+			Approval:   len(ds.RequiresApproval) > 0,
+		})
+	}
+	return out
+}
+
+// sessionPublishTargets resolves the publish inboxes this session may publish
+// to: docsets in the identity's publish scope (its explicit publish list, else
+// all docsets in its lore) that declare a publish_dir. Publish inboxes only
+// exist when auth is enforced.
+func (s *Server) sessionPublishTargets(id Identity) []cmds.PublishTarget {
+	if !s.authEnforced || id.LoreName == "" {
+		return nil
+	}
+	names := id.PublishDocsets
+	if len(names) == 0 {
+		names = s.auth.Lore[id.LoreName]
+	}
+	var out []cmds.PublishTarget
+	for _, name := range names {
+		ds, ok := s.auth.Docsets[name]
+		if !ok || ds.PublishDir == "" {
+			continue
+		}
+		out = append(out, cmds.PublishTarget{Name: name, MaxFileSize: ds.MaxPublishSize})
+	}
+	return out
+}
+
+// writableDocsetNames reports, by docset name, which docsets this session may
+// write to directly. It mirrors the FS-authoritative writable scope: the global
+// write lock must be open; in unenforced mode every docset is writable; when
+// enforced, the identity must be named and hold write scope, and per-docset
+// readonly excludes a docset.
+func (s *Server) writableDocsetNames(id Identity) map[string]bool {
+	out := map[string]bool{}
+	if s.config.Readonly {
+		return out // global lock closed: nothing is writable
+	}
+	if !s.authEnforced {
+		for name := range s.auth.Docsets {
+			out[name] = true
+		}
+		return out
+	}
+	if id.IdentityName == "" || !scopeGrantsWrite(id.Scopes) {
+		return out
+	}
+	names := id.PublishDocsets
+	if len(names) == 0 {
+		names = s.auth.Lore[id.LoreName]
+	}
+	for _, name := range names {
+		ds, ok := s.auth.Docsets[name]
+		if !ok {
+			continue
+		}
+		if ds.Readonly != nil && *ds.Readonly {
+			continue
+		}
+		out[name] = true
+	}
+	return out
 }
 
 // anonymousIdentity returns the identity used for callers that present no
@@ -743,14 +840,10 @@ func (s *Server) anonymousIdentity() Identity {
 			id.PathAccess = s.resolveLorePathAccess("default")
 		}
 	} else {
-		// Auth not enforced: full access
+		// Auth not enforced: full access to the synthetic `public` docset.
+		id.LoreName = "default"
+		id.PathAccess = s.resolveLorePathAccess("default")
 		id.Scopes = []string{ScopeFull}
-		for name := range s.merge.mounts {
-			id.PathAccess = append(id.PathAccess, config.PathMapping{
-				Source:  "/" + name,
-				Display: "/" + name,
-			})
-		}
 	}
 	return id
 }

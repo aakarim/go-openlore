@@ -197,11 +197,40 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 | `skills` | List available skill commands |
 | `exit` / `quit` | Close session |
 
+**Introspection**
+
+| Command | Description |
+|---------|-------------|
+| `whoami` | Print your identity and lore |
+| `lore` | Introspection dispatcher (run `lore` for subcommands) |
+| `lore docsets` | List the docsets you can access, their paths, and attributes |
+
+`lore docsets` prints an aligned, greppable table:
+
+```
+$ lore docsets
+DOCSET    ACCESS  ATTRIBUTES     PATHS
+public    r       -              /docs/public,/docs/getting-started.md
+backend   rw      approval       /docs/backend,/docs/api
+home      rw      home,publish   /home/backend
+```
+
+- `ACCESS` is `r` or `rw` — whether you can write to the docset **directly** with the
+  normal write verbs.
+- `ATTRIBUTES` is a comma-joined set of tokens (`-` if none): `home` (your `$HOME`
+  docset), `publish` (the docset has a publish inbox), `approval` (some or all writes
+  are approval-gated).
+
 **Publishing**
 
 | Command | Description |
 |---------|-------------|
-| `publish` | Publish content from stdin to a docset (`echo "..." \| publish <docset> <path>`) |
+| `publish` | Publish content from stdin to a docset inbox (`echo "..." \| publish <docset> <path>`) |
+
+`publish` targets a docset's **publish inbox** (`publish_dir`) — a separate mechanism
+from direct writability, useful for submitting content to read-only docsets for
+curation. `lore docsets` surfaces only the *presence* of an inbox (the `publish`
+attribute); run `publish` with no args to list your inboxes.
 
 **Shell Syntax**
 

@@ -81,7 +81,6 @@ func TestApprovalEvents_PendingThenPostWrite(t *testing.T) {
 	af := newApprovalFS(base, store, decide, "claude", bus)
 	scoped := newScopedWriteFS(af, []string{"/ops"})
 	proposer := shell.NewShell(scoped)
-	proposer.SetEnv("OPENLORE_DOCSETS", "ops")
 
 	// Propose: gated write parks a request and emits approval_pending only.
 	if _, errs, code := run(proposer, "echo ON > /ops/freeze"); code != 0 || !strings.Contains(errs, "pending approval") {
