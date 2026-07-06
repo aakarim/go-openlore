@@ -6,7 +6,11 @@ import (
 )
 
 func CmdCd(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
+	// With no argument, cd goes to $HOME when set, otherwise to /.
 	target := "/"
+	if home := ctx.GetEnv("HOME"); home != "" {
+		target = home
+	}
 	if len(args) > 0 {
 		target = args[0]
 	}

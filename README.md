@@ -580,11 +580,38 @@ Create a `lore.json` to control access per public key:
     {
       "name": "backend-agent",
       "public_key": "ssh-ed25519 AAAA...",
-      "lore": "backend"
+      "lore": "backend",
+      "home": "backend"
     }
   ]
 }
 ```
+
+### Home Directory
+
+An identity can name one of the docsets in its lore as its `home`. That
+docset's display path becomes the session's `$HOME`, enabling `~` and `~/path`
+expansion and letting `cd` with no arguments jump home. The session still
+starts in the default working directory (`default_cwd`) — `home` only sets
+`$HOME`, not where you land on connect:
+
+```json
+{
+  "name": "backend-agent",
+  "public_key": "ssh-ed25519 AAAA...",
+  "lore": "backend",
+  "home": "backend-home"
+}
+```
+
+```bash
+ssh -p 2222 server 'echo $HOME'   # -> /home/backend (the home docset's path)
+ssh -p 2222 server "cat ~/notes.md"
+ssh -p 2222 server "cd && pwd"    # -> /home/backend
+```
+
+The `home` docset must be one of the docsets in the identity's lore. Pair it
+with a `publish_dir` to give each agent its own writable personal space.
 
 ### Managing Identities
 
@@ -593,6 +620,7 @@ openlore identity add \
   --name my-agent \
   --key "ssh-ed25519 AAAA..." \
   --lore backend \
+  --home backend \
   --auth ./lore.json
 ```
 
@@ -695,4 +723,4 @@ See [SECURITY.md](SECURITY.md) for a full security evaluation.
 
 ## License
 
-[MIT](LICENSE) — Adil Karim
+[Mozilla Public License 2.0](LICENSE) — Adil Karim

@@ -191,6 +191,7 @@ func main() {
 				loreName := idCmd.String("lore", "", "lore spec name (required)")
 				authPath := idCmd.String("auth", "./lore.json", "path to lore.json")
 				comment := idCmd.String("comment", "", "optional comment")
+				home := idCmd.String("home", "", "docset in the lore to use as the identity's home ($HOME)")
 				idCmd.Usage = func() {
 					fmt.Fprintf(os.Stderr, "Usage: openlore identity add [flags]\n\n")
 					fmt.Fprintf(os.Stderr, "Add a public key identity to lore.json.\n\n")
@@ -231,7 +232,8 @@ func main() {
 				}
 
 				// Check lore name exists
-				if _, ok := auth.Lore[*loreName]; !ok {
+				loreDocsets, ok := auth.Lore[*loreName]
+				if !ok {
 					fmt.Fprintf(os.Stderr, "error: lore %q not found in %s\n", *loreName, *authPath)
 					fmt.Fprintf(os.Stderr, "Available lore: ")
 					for k := range auth.Lore {
@@ -239,6 +241,21 @@ func main() {
 					}
 					fmt.Fprintln(os.Stderr)
 					os.Exit(1)
+				}
+
+				// If a home docset is given, it must be one of the lore's docsets.
+				if *home != "" {
+					inLore := false
+					for _, ds := range loreDocsets {
+						if ds == *home {
+							inLore = true
+							break
+						}
+					}
+					if !inLore {
+						fmt.Fprintf(os.Stderr, "error: home docset %q is not in lore %q\n", *home, *loreName)
+						os.Exit(1)
+					}
 				}
 
 				// Check for duplicate keys
@@ -258,6 +275,9 @@ func main() {
 				}
 				if *comment != "" {
 					newIdent.Comment = *comment
+				}
+				if *home != "" {
+					newIdent.Home = *home
 				}
 				auth.Identities = append(auth.Identities, newIdent)
 

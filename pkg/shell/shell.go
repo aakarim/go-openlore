@@ -455,10 +455,34 @@ func (s *Shell) expandWord(word *parser.Word) string {
 		return ""
 	}
 	var sb strings.Builder
-	for _, part := range word.Parts {
-		sb.WriteString(s.expandPart(part))
+	for i, part := range word.Parts {
+		str := s.expandPart(part)
+		// Tilde expansion applies only to an unquoted literal at the start of
+		// a word: `~` or `~/…` becomes $HOME. Quoted parts are untouched.
+		if i == 0 {
+			if _, ok := part.(*parser.Lit); ok {
+				str = s.expandTilde(str)
+			}
+		}
+		sb.WriteString(str)
 	}
 	return sb.String()
+}
+
+// expandTilde replaces a leading ~ (as `~` or `~/…`) with $HOME. If HOME is
+// unset the tilde is left untouched, matching bash.
+func (s *Shell) expandTilde(v string) string {
+	home := s.GetEnv("HOME")
+	if home == "" {
+		return v
+	}
+	if v == "~" {
+		return home
+	}
+	if strings.HasPrefix(v, "~/") {
+		return home + v[1:]
+	}
+	return v
 }
 
 func (s *Shell) expandPart(part parser.WordPart) string {

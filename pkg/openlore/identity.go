@@ -19,6 +19,7 @@ type Identity struct {
 	PathAccess     []config.PathMapping // resolved path mappings
 	PublishDocsets []string             // writable docsets (nil = all in lore)
 	Capabilities   []string             // approval capabilities held (Part C)
+	HomeDir        string               // display path of the identity's home docset ($HOME); empty = none
 }
 
 // OnConnectFunc is called when a new SSH session is established.

@@ -173,6 +173,10 @@ type AuthIdentity struct {
 	PublicKey string   `json:"public_key"`
 	Lore      string   `json:"lore"`
 	Publish   []string `json:"publish,omitempty"` // writable docsets; empty = all in lore
+	// Home names the docset that serves as this identity's home directory. Its
+	// display path becomes $HOME and the session's initial working directory.
+	// Must be one of the docsets in the identity's lore. Empty = no home.
+	Home string `json:"home,omitempty"`
 	// Capabilities are the approval capabilities this identity holds (Part C),
 	// e.g. "approve@oncall". Used to authorize `approve`/`reject` of pending
 	// requests whose required capability matches.
@@ -731,8 +735,21 @@ func LoadAuthConfig(path string) (*AuthConfig, error) {
 	}
 
 	for _, ident := range auth.Identities {
-		if _, ok := auth.Lore[ident.Lore]; !ok {
+		docsetNames, ok := auth.Lore[ident.Lore]
+		if !ok {
 			return nil, fmt.Errorf("identity %q references unknown lore %q", ident.Name, ident.Lore)
+		}
+		if ident.Home != "" {
+			inLore := false
+			for _, ds := range docsetNames {
+				if ds == ident.Home {
+					inLore = true
+					break
+				}
+			}
+			if !inLore {
+				return nil, fmt.Errorf("identity %q home docset %q is not in its lore %q", ident.Name, ident.Home, ident.Lore)
+			}
 		}
 	}
 

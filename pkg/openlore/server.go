@@ -345,6 +345,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 				id.PathAccess = s.resolveLorePathAccess(ident.Lore)
 				id.PublishDocsets = ident.Publish
 				id.Capabilities = ident.Capabilities
+				id.HomeDir = s.resolveHomeDir(ident.Home)
 				matched = true
 				break
 			}
@@ -410,6 +411,26 @@ func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
 		}
 	}
 	return mappings
+}
+
+// resolveHomeDir returns the display path of the named home docset, used as
+// the session's $HOME and initial working directory. It uses the first path
+// mapping of the docset (its Display, falling back to Source). Returns "" when
+// no home is set or the docset has no paths.
+func (s *Server) resolveHomeDir(homeDocset string) string {
+	if s.auth == nil || homeDocset == "" {
+		return ""
+	}
+	ds, ok := s.auth.Docsets[homeDocset]
+	if !ok || len(ds.Paths) == 0 {
+		return ""
+	}
+	pm := ds.Paths[0]
+	display := pm.Display
+	if display == "" {
+		display = pm.Source
+	}
+	return vfs.CleanPath(display)
 }
 
 // writableDocsetRoots resolves the docset roots an identity may write to
@@ -610,6 +631,11 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 		// Set identity info as environment variables
 		if id.IdentityName != "" {
 			shell.SetEnv("OPENLORE_IDENTITY", id.IdentityName)
+		}
+		// $HOME points at the identity's home docset (enables ~ expansion and
+		// `cd` with no arguments).
+		if id.HomeDir != "" {
+			shell.SetEnv("HOME", id.HomeDir)
 		}
 		if len(id.Capabilities) > 0 {
 			shell.SetEnv("OPENLORE_CAPABILITIES", strings.Join(id.Capabilities, ","))

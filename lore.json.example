@@ -26,6 +26,12 @@
       "publish_dir": "./published/backend",
       "max_publish_size": 5000000
     },
+    "backend-home": {
+      "paths": [
+        {"published/backend-home": "/home/backend"}
+      ],
+      "publish_dir": "./published/backend-home"
+    },
     "ops": {
       "paths": [
         "/docs/infrastructure",
@@ -37,7 +43,7 @@
   "lore": {
     "default": ["public"],
     "frontend": ["public", "frontend"],
-    "backend": ["public", "backend"],
+    "backend": ["public", "backend", "backend-home"],
     "ops": ["public", "ops"],
     "full-access": ["public", "frontend", "backend", "ops"]
   },
@@ -52,7 +58,8 @@
       "name": "backend-agent",
       "comment": "GPT agent for backend services",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBackendKeyHere backend-agent",
-      "lore": "backend"
+      "lore": "backend",
+      "home": "backend-home"
     },
     {
       "name": "ops-agent",
