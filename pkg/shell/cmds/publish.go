@@ -87,11 +87,10 @@ func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdi
 	}
 
 	if _, err := WriteFile(ctx, p, data, false); err != nil {
-		var pe *vfs.PendingApprovalError
-		if errors.As(err, &pe) {
-			// Not a failure: the publish was accepted as a pending request.
-			fmt.Fprintf(w, "Pending approval: %s (requires %s)\n", pe.RequestID, pe.Capability)
-			fmt.Fprintf(w, "Track at /requests/%s\n", pe.RequestID)
+		var pchg *vfs.PendingChangeError
+		if errors.As(err, &pchg) {
+			// Not a failure: a middleware parked the publish as a pending change.
+			fmt.Fprintln(w, pendingChangeLine("publish", p, pchg))
 			return 0
 		}
 		var pce *vfs.PreconditionError

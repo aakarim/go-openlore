@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/aakarim/go-openlore/pkg/openlore/hooks"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 	"gopkg.in/yaml.v3"
 )
@@ -24,8 +23,8 @@ type Config struct {
 	MOTD            string
 	AuthFile        string
 	SkillsDir       string
-	// DataDir is the server's writable control-plane data root (approval
-	// requests, etc.). Distinct from docset content. Defaults to ./.openlore.
+	// DataDir is the server's writable control-plane data root. Distinct from
+	// docset content. Defaults to ./.openlore.
 	DataDir         string
 	HTTPPort        int
 	ExternalSSHPort int // advertised SSH port (for X-SSH-Port header behind a LB)
@@ -44,8 +43,11 @@ type Config struct {
 	Files        FilesConfig
 	Folders      []FolderConfig
 	Passkeys     PasskeysConfig
-	Hooks        hooks.HookSet // event hooks (post_write, approval_pending, …)
-	Logger       *slog.Logger
+	// Shellexec is the external-command middleware config (pre_read, pre_commit,
+	// post_write) run by the built-in shellexec plugin. Replaces the legacy
+	// event-bus `hooks` path with middleware on the read/write chains.
+	Shellexec ShellexecConfig
+	Logger    *slog.Logger
 
 	// Readonly is the global write lock. Default true: the substrate is a
 	// read-only filesystem and no write verbs are available. Set false to
@@ -80,6 +82,41 @@ type Config struct {
 	// Track sources for conflict detection.
 	configFileLoaded   bool
 	embeddedConfigUsed bool
+}
+
+// ShellexecConfig is the openlore.yml `shellexec:` block: external commands run
+// as middleware on the read and write paths. pre_read runs before a read (may
+// abort it), pre_commit runs before a write commits (may reject it), post_write
+// runs after a durable commit (fire-and-forget: never halts the log).
+type ShellexecConfig struct {
+	PreRead   []ShellexecCmd `yaml:"pre_read"`
+	PreCommit []ShellexecCmd `yaml:"pre_commit"`
+	PostWrite []ShellexecCmd `yaml:"post_write"`
+}
+
+// ShellexecCmd is a single external command run by the shellexec plugin. It is
+// run via `sh -c` with the OPENLORE_* env protocol.
+type ShellexecCmd struct {
+	// Cmd is the shell command line to execute.
+	Cmd string `yaml:"cmd"`
+	// Timeout is a duration string (e.g. "30s") capping wall-clock runtime.
+	// Empty means 30s. A timeout counts as a failure.
+	Timeout string `yaml:"timeout"`
+	// FailOnError makes a non-zero exit fatal to the operation for pre_read /
+	// pre_commit (the read/write is aborted). Defaults to true (nil → true).
+	// Ignored for post_write, which never halts the log.
+	FailOnError *bool `yaml:"fail_on_error"`
+	// Debounce is a duration string coalescing repeated pre_read hits on the
+	// same path. Empty means 2s. Only applies to pre_read.
+	Debounce string `yaml:"debounce"`
+	// Async runs the command in the background (fire-and-forget). Default false
+	// (synchronous). An async pre_read / pre_commit cannot abort the operation.
+	Async bool `yaml:"async"`
+}
+
+// IsEmpty reports whether no shellexec commands are configured.
+func (c ShellexecConfig) IsEmpty() bool {
+	return len(c.PreRead) == 0 && len(c.PreCommit) == 0 && len(c.PostWrite) == 0
 }
 
 // PasskeysConfig holds WebAuthn passkey configuration.
@@ -156,23 +193,6 @@ type DocsetSpec struct {
 	// to this docset. "" inherits Config.WriteConflictPolicy; "hash" forces
 	// compare-and-swap overwrites; "last_write_wins" forces unconditional ones.
 	WriteConflictPolicy string `json:"write_conflict_policy,omitempty"`
-
-	// RequiresApproval lists the human-gating rules for this docset (Part C). A
-	// write whose target matches a rule's Paths is not committed; instead a
-	// pending request is recorded and an identity holding the rule's Capability
-	// must approve it. Empty means no approval gating for this docset.
-	RequiresApproval []ApprovalRule `json:"requires_approval,omitempty"`
-}
-
-// ApprovalRule gates writes to a set of virtual paths behind a capability.
-type ApprovalRule struct {
-	// Paths are absolute virtual-path globs. A trailing "/**" matches the
-	// subtree; "*" within a segment uses shell glob semantics; otherwise the
-	// match is exact.
-	Paths []string `json:"paths"`
-	// Capability is the approval capability an identity must hold to approve a
-	// matching request, e.g. "approve@oncall".
-	Capability string `json:"capability"`
 }
 
 // PathMapping represents a path entry — either a simple string path or a
@@ -218,9 +238,8 @@ type AuthIdentity struct {
 	// display path becomes $HOME and the session's initial working directory.
 	// Must be one of the docsets in the identity's lore. Empty = no home.
 	Home string `json:"home,omitempty"`
-	// Capabilities are the approval capabilities this identity holds (Part C),
-	// e.g. "approve@oncall". Used to authorize `approve`/`reject` of pending
-	// requests whose required capability matches.
+	// Capabilities are the extra capabilities this identity holds, e.g.
+	// "spawn" to authorize the async external-work command.
 	Capabilities []string `json:"capabilities,omitempty"`
 
 	// Match lists the token-claim predicates that resolve TO this identity.
@@ -251,31 +270,31 @@ type Option func(*Config) error
 
 // fileConfig mirrors Config for YAML deserialization.
 type fileConfig struct {
-	ConfigVersion       string         `yaml:"version"`
-	Port                int            `yaml:"port"`
-	MetricsPort         int            `yaml:"metrics_port"`
-	HostKeyPath         string         `yaml:"host_key_path"`
-	MOTD                string         `yaml:"motd"`
-	MOTDFile            string         `yaml:"motd_file"`
-	AuthFile            string         `yaml:"auth_file"`
-	SkillsDir           string         `yaml:"skills_dir"`
-	DataDir             string         `yaml:"data_dir"`
-	HTTPPort            int            `yaml:"http_port"`
-	ExternalSSHPort     int            `yaml:"external_ssh_port"`
-	MCP                 *mcpYAML       `yaml:"mcp"`
-	API                 *apiYAML       `yaml:"api"`
-	TLSCert             string         `yaml:"tls_cert"`
-	TLSKey              string         `yaml:"tls_key"`
-	CAKeysFile          string         `yaml:"ca_keys_file"`
-	HostCertFile        string         `yaml:"host_cert_file"`
-	DefaultCwd          string         `yaml:"default_cwd"`
-	Files               *filesYAML     `yaml:"files"`
-	Folders             []FolderConfig `yaml:"folders"`
-	Passkeys            *passkeysYAML  `yaml:"passkeys"`
-	Hooks               *hooks.HookSet `yaml:"hooks"`
-	Readonly            *bool          `yaml:"readonly"`
-	WriteConflictPolicy string         `yaml:"write_conflict_policy"`
-	MaxJobs             int            `yaml:"max_jobs"`
+	ConfigVersion       string           `yaml:"version"`
+	Port                int              `yaml:"port"`
+	MetricsPort         int              `yaml:"metrics_port"`
+	HostKeyPath         string           `yaml:"host_key_path"`
+	MOTD                string           `yaml:"motd"`
+	MOTDFile            string           `yaml:"motd_file"`
+	AuthFile            string           `yaml:"auth_file"`
+	SkillsDir           string           `yaml:"skills_dir"`
+	DataDir             string           `yaml:"data_dir"`
+	HTTPPort            int              `yaml:"http_port"`
+	ExternalSSHPort     int              `yaml:"external_ssh_port"`
+	MCP                 *mcpYAML         `yaml:"mcp"`
+	API                 *apiYAML         `yaml:"api"`
+	TLSCert             string           `yaml:"tls_cert"`
+	TLSKey              string           `yaml:"tls_key"`
+	CAKeysFile          string           `yaml:"ca_keys_file"`
+	HostCertFile        string           `yaml:"host_cert_file"`
+	DefaultCwd          string           `yaml:"default_cwd"`
+	Files               *filesYAML       `yaml:"files"`
+	Folders             []FolderConfig   `yaml:"folders"`
+	Passkeys            *passkeysYAML    `yaml:"passkeys"`
+	Shellexec           *ShellexecConfig `yaml:"shellexec"`
+	Readonly            *bool            `yaml:"readonly"`
+	WriteConflictPolicy string           `yaml:"write_conflict_policy"`
+	MaxJobs             int              `yaml:"max_jobs"`
 	// Tokens + OIDCIssuers are server infrastructure (bearer-token issuance for
 	// the MCP + HTTP API), hence configured here rather than in lore.json.
 	Tokens      *AuthTokensConfig `yaml:"tokens"`
@@ -438,8 +457,8 @@ func WithConfigFile(path string) Option {
 		if len(fc.Folders) > 0 {
 			cfg.Folders = fc.Folders
 		}
-		if fc.Hooks != nil {
-			cfg.Hooks = *fc.Hooks
+		if fc.Shellexec != nil {
+			cfg.Shellexec = *fc.Shellexec
 		}
 		if fc.Readonly != nil {
 			cfg.Readonly = *fc.Readonly
@@ -550,8 +569,8 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if len(fc.Folders) > 0 {
 				cfg.Folders = fc.Folders
 			}
-			if fc.Hooks != nil {
-				cfg.Hooks = *fc.Hooks
+			if fc.Shellexec != nil {
+				cfg.Shellexec = *fc.Shellexec
 			}
 			if fc.Readonly != nil {
 				cfg.Readonly = *fc.Readonly

@@ -23,9 +23,6 @@ func enforcedDocsetServer() *Server {
 					Paths:          []config.PathMapping{{Source: "/docs/backend", Display: "/docs/backend"}},
 					PublishDir:     "./published/backend",
 					MaxPublishSize: 5000,
-					RequiresApproval: []config.ApprovalRule{
-						{Paths: []string{"/docs/backend/**"}, Capability: "approve@oncall"},
-					},
 				},
 				"archive": {
 					Paths:    []config.PathMapping{{Source: "/docs/archive", Display: "/docs/archive"}},
@@ -80,7 +77,7 @@ func TestSessionDocsets_Enforced(t *testing.T) {
 	if !public.Writable {
 		t.Fatalf("public should be directly writable for a full-scope agent: %+v", public)
 	}
-	if public.Home || public.HasPublish || public.Approval {
+	if public.Home || public.HasPublish {
 		t.Fatalf("public should carry no attributes: %+v", public)
 	}
 
@@ -90,9 +87,6 @@ func TestSessionDocsets_Enforced(t *testing.T) {
 	}
 	if !backend.HasPublish {
 		t.Fatalf("backend has publish_dir → HasPublish")
-	}
-	if !backend.Approval {
-		t.Fatalf("backend has requires_approval → Approval")
 	}
 
 	archive, _ := docsetByName(got, "archive")

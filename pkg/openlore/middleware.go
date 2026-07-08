@@ -1,0 +1,145 @@
+package openlore
+
+import (
+	"context"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
+)
+
+// Actor is non-durable context about the principal that triggered an operation.
+// It flows into middleware for decisions, gating, and audit. It is deliberately
+// NOT part of vfs.ChangeSet: proposer/approver identity is the consumer's record
+// and decision input, never part of the content-addressed change.
+type Actor struct {
+	ID    string
+	Extra map[string]string
+}
+
+// ── Admission (pre-commit write) chain ──────────────────────────────────────
+//
+// The admission chain runs synchronously in the caller's goroutine BEFORE a
+// mutation reaches the write log. It sits inside the fixed, deployment-owned
+// scope layer, so it only ever sees in-scope writes. Middleware inspect the
+// (immutable) ChangeSet and either allow, defer, or reject:
+//
+//	allow  → return next(ctx, op)                                 (commit path)
+//	defer  → return WriteResult{}, &vfs.PendingChangeError{...}   (park; do NOT call next)
+//	reject → return WriteResult{}, err                            (refuse)
+//
+// Middleware MUST treat op.ChangeSet as immutable — inspect and decide only,
+// never rewrite the proposed bytes or snapshot.
+
+// WriteOp is the input to the admission chain.
+type WriteOp struct {
+	ChangeSet vfs.ChangeSet
+	Actor     Actor
+}
+
+// WriteResult is the outcome of a committed mutation.
+type WriteResult struct {
+	// Hash is the committed content hash (empty for a delete, or when the
+	// mutation was deferred/rejected).
+	Hash string
+}
+
+// WriteHandler commits or hands off a WriteOp. The terminal handler submits to
+// the write log; middleware wrap it.
+type WriteHandler func(ctx context.Context, op WriteOp) (WriteResult, error)
+
+// WriteMiddleware wraps a WriteHandler.
+type WriteMiddleware func(next WriteHandler) WriteHandler
+
+// WriteMiddlewareProvider is implemented by a plugin that contributes admission
+// middleware. The server composes providers' middleware in registration order,
+// after the fixed scope layer.
+type WriteMiddlewareProvider interface {
+	WriteMiddleware() []WriteMiddleware
+}
+
+// chainWrite composes mws around terminal. mws[0] is the OUTERMOST layer (runs
+// first); execution order == registration order.
+func chainWrite(terminal WriteHandler, mws ...WriteMiddleware) WriteHandler {
+	h := terminal
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
+}
+
+// ── Post-commit chain ───────────────────────────────────────────────────────
+//
+// The post-commit chain runs at the applier AFTER a change is durably committed,
+// for both fresh writes and approved held changesets. It is where the feed and
+// external (post_write) hooks fire. It cannot veto — the write already happened.
+
+// CommitInfo describes a committed change.
+type CommitInfo struct {
+	ChangeSet vfs.ChangeSet
+	Hash      string
+	Actor     Actor
+}
+
+// PostCommitHandler processes a committed change.
+type PostCommitHandler func(ctx context.Context, info CommitInfo) error
+
+// PostCommitMiddleware wraps a PostCommitHandler.
+type PostCommitMiddleware func(next PostCommitHandler) PostCommitHandler
+
+// PostCommitProvider is implemented by a plugin that contributes post-commit
+// middleware.
+type PostCommitProvider interface {
+	PostCommitMiddleware() []PostCommitMiddleware
+}
+
+// chainPostCommit composes mws around terminal. mws[0] is outermost.
+func chainPostCommit(terminal PostCommitHandler, mws ...PostCommitMiddleware) PostCommitHandler {
+	h := terminal
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
+}
+
+// ── Read chain ──────────────────────────────────────────────────────────────
+//
+// The read chain runs BEFORE a read reaches the substrate. It is a
+// before-read gate: a middleware can run work (e.g. a debounced git pull) and,
+// on failure, abort the read by returning an error. It does not transform the
+// bytes.
+
+// ReadKind names the read operation a ReadOp refers to.
+type ReadKind string
+
+const (
+	ReadKindStat ReadKind = "stat"
+	ReadKindDir  ReadKind = "readdir"
+	ReadKindFile ReadKind = "readfile"
+)
+
+// ReadOp is the input to the read chain.
+type ReadOp struct {
+	Path  string
+	Kind  ReadKind
+	Actor Actor
+}
+
+// ReadHandler runs the before-read step. A non-nil error aborts the read.
+type ReadHandler func(ctx context.Context, op ReadOp) error
+
+// ReadMiddleware wraps a ReadHandler.
+type ReadMiddleware func(next ReadHandler) ReadHandler
+
+// ReadMiddlewareProvider is implemented by a plugin that contributes read
+// middleware.
+type ReadMiddlewareProvider interface {
+	ReadMiddleware() []ReadMiddleware
+}
+
+// chainRead composes mws around terminal. mws[0] is outermost.
+func chainRead(terminal ReadHandler, mws ...ReadMiddleware) ReadHandler {
+	h := terminal
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
+}

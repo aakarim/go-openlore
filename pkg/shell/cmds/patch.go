@@ -83,10 +83,10 @@ func CmdPatch(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin 
 	}
 
 	if _, err := wfs.WriteFileAtomic(resolved, newContent, opts); err != nil {
-		var pae *vfs.PendingApprovalError
-		if errors.As(err, &pae) {
-			fmt.Fprintf(errW, "patch: %s pending approval as %s (requires %s)\n", target, pae.RequestID, pae.Capability)
-			fmt.Fprintf(errW, "  track: /requests/%s\n", pae.RequestID)
+		var pchg *vfs.PendingChangeError
+		if errors.As(err, &pchg) {
+			// Not a failure: a middleware parked the patch as a pending change.
+			fmt.Fprintln(errW, pendingChangeLine("patch", target, pchg))
 			return 0
 		}
 		var pe *vfs.PreconditionError

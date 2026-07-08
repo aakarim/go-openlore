@@ -34,7 +34,7 @@ func printLoreUsage(w io.Writer) {
 }
 
 // cmdLoreDocsets prints an aligned, greppable table of the session's accessible
-// docsets: name, direct access (r/rw), attribute tokens (home,publish,approval),
+// docsets: name, direct access (r/rw), attribute tokens (home,publish),
 // and display paths.
 func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer) int {
 	docsets := ctx.Docsets()
@@ -51,9 +51,6 @@ func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer) 
 		}
 		if d.HasPublish {
 			attrs = append(attrs, "publish")
-		}
-		if d.Approval {
-			attrs = append(attrs, "approval")
 		}
 		attrStr := "-"
 		if len(attrs) > 0 {

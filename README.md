@@ -250,7 +250,7 @@ attribute); run `publish` with no args to list your inboxes.
 
 ### What's NOT Supported (By Design)
 
-No `rm`, `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, or `exec` from a normal session. The shell is an interpreter, not a real bash process. The filesystem is read-only by default; when writing is enabled the only mutation surface is the whole-file write verbs (`write`, `>`, `>>`, `tee`, `patch`, `sed -i`), `mkdir` inside docsets, `publish`, and — for explicitly trusted identities — `spawn` (see [Writing](#writing)). There is no streaming, partial, or offset write anywhere.
+No `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, or `exec` from a normal session. The shell is an interpreter, not a real bash process. The filesystem is read-only by default; when writing is enabled the only mutation surface is the whole-file write verbs (`write`, `>`, `>>`, `tee`, `patch`, `sed -i`), `mkdir` / `mkdir -p` inside docsets, `rm` / `rm -r` inside docsets, `publish`, and — for explicitly trusted identities — `spawn` (see [Writing](#writing)). There is no streaming, partial, or offset write anywhere.
 
 ## Skills
 
@@ -307,6 +307,9 @@ cat input.md | tee /mydocset/copy.md     # write stdin to a file
 cat change.diff | patch /mydocset/x.md   # apply a unified diff atomically
 sed -i 's/old/new/g' /mydocset/x.md      # edit in place
 mkdir /mydocset/section                   # create a folder inside a docset
+mkdir -p /mydocset/a/b/c                  # create nested folders
+rm /mydocset/old.md                       # delete a file
+rm -r /mydocset/section                   # delete a folder tree (atomic)
 echo "# API" | publish mydocset api.md   # publish a new source
 ```
 
@@ -322,8 +325,10 @@ Key properties:
   clobbered) if the file changed since you read it (`write_conflict_policy: hash`,
   overridable to `last_write_wins`). Append and `patch` are always CAS.
 - **Optional human-in-the-loop approval.** A docset can mark paths
-  `requires_approval`; a write to those becomes a pending request under
-  `/requests` that an approver with the right capability commits via `approve`.
+  `requires_approval`; a write or delete to those becomes a pending **changeset**
+  under `/requests` that an approver with the right capability commits via
+  `approve`. Deletes are captured as an exact subtree snapshot and stay live for
+  review until approved.
 - **Async external work (`spawn`).** Trusted identities (granted the `spawn`
   capability) can run an external command and write its output back into the lore
   in the background; track it under `/jobs`. The write-back is scoped,

@@ -70,6 +70,27 @@ func (s *scopedWriteFS) Mkdir(p string) error {
 	return s.inner.Mkdir(p)
 }
 
+func (s *scopedWriteFS) MkdirAll(p string) error {
+	if s.inner == nil || !s.inScope(p) {
+		return vfs.ErrReadOnly
+	}
+	return s.inner.MkdirAll(p)
+}
+
+func (s *scopedWriteFS) Remove(p string) error {
+	if s.inner == nil || !s.inScope(p) {
+		return vfs.ErrReadOnly
+	}
+	return s.inner.Remove(p)
+}
+
+func (s *scopedWriteFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
+	if s.inner == nil || !s.inScope(p) {
+		return vfs.ErrReadOnly
+	}
+	return s.inner.RemoveAll(p, opts)
+}
+
 // SetWriteable / SetReadonly are no-ops: a session must not be able to toggle
 // the substrate-wide write lock. The lock is owned centrally by the server
 // (MergeFS.SetWriteable at startup); the session only ever narrows it.

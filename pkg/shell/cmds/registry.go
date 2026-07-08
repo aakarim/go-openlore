@@ -22,6 +22,8 @@ func init() {
 	Register("cd", CmdCd)
 	Register("tree", CmdTree)
 	Register("stat", CmdStat)
+	Register("mkdir", CmdMkdir)
+	Register("rm", CmdRm)
 	// text
 	Register("sort", CmdSort)
 	Register("uniq", CmdUniq)
@@ -91,9 +93,6 @@ func init() {
 	Register("patch", CmdPatch)
 	// publishing
 	Register("publish", CmdPublish)
-	// approvals (human-gated writes)
-	Register("approve", CmdApprove)
-	Register("reject", CmdReject)
 	// async external work (Part D)
 	Register("spawn", CmdSpawn)
 	// identity

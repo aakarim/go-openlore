@@ -127,6 +127,70 @@ type WritableFS interface {
 	// exist) but errors if name is not strictly inside a docset — you cannot
 	// create a docset, nor anything at or above a docset root, through the FS.
 	Mkdir(name string) error
+
+	// MkdirAll creates a folder and any missing ancestors (mkdir -p). Like
+	// Mkdir it errors if name is not strictly inside a docset: the enclosing
+	// docset root must already exist, and every folder it creates must sit
+	// strictly below that root. An already-existing directory is not an error.
+	MkdirAll(name string) error
+
+	// Remove deletes a single file or empty directory at name. It errors if
+	// name is a docset root or anything at or above one, and refuses a
+	// non-empty directory (use RemoveAll). It participates in the readonly
+	// lock like every mutation.
+	Remove(name string) error
+
+	// RemoveAll deletes name and everything under it as a single atomic
+	// whole-tree operation, honoring opts.Expected as a compare-and-swap
+	// precondition on the exact subtree. It errors if name is a docset root or
+	// anything at or above one, and refuses the delete if the physical subtree
+	// contains any descendant hidden or denied by file policy (so the atomic
+	// rename cannot destroy invisible bytes). A mismatch against opts.Expected
+	// returns a *TreeStaleError and removes nothing.
+	RemoveAll(name string, opts RemoveOpts) error
+}
+
+// RemoveOpts carries the precondition contract for an atomic whole-tree delete.
+// The zero value (Expected nil) means an unconditional delete.
+type RemoveOpts struct {
+	// Expected, when non-nil, requires the current visible subtree at the
+	// target to match this snapshot exactly before the delete commits. Any
+	// drift — a changed file, an added or removed descendant, a target that
+	// vanished or changed kind — fails with a *TreeStaleError and deletes
+	// nothing.
+	Expected *TreeSnapshot
+}
+
+// TreeSnapshot is an exact, order-independent description of a subtree, used as
+// the compare-and-swap base for an atomic delete. Root is the cleaned target
+// path the snapshot was taken at; Ops lists every descendant (files and
+// directories) with paths relative to Root.
+type TreeSnapshot struct {
+	Root string
+	Ops  []TreeOp
+}
+
+// TreeOp describes one descendant within a TreeSnapshot. RelPath is relative to
+// the snapshot Root (the root itself is RelPath "."). Kind is "file" or "dir".
+// Hash is the hex SHA-256 of a file's content (empty for a directory); Size is
+// the file's byte length (0 for a directory).
+type TreeOp struct {
+	RelPath string
+	Kind    string // "file" | "dir"
+	Hash    string
+	Size    int64
+}
+
+// TreeStaleError is returned by RemoveAll when the current subtree no longer
+// matches opts.Expected — the tree drifted since it was snapshotted, so the
+// delete was refused. Detail names the first divergence found.
+type TreeStaleError struct {
+	Path   string
+	Detail string
+}
+
+func (e *TreeStaleError) Error() string {
+	return fmt.Sprintf("tree changed at %s: %s; re-scan and retry", e.Path, e.Detail)
 }
 
 // WriteScopeFS is optionally implemented by a session filesystem that confines
@@ -167,21 +231,6 @@ func (e *PreconditionError) Error() string {
 		return fmt.Sprintf("precondition failed: %s does not exist; re-read and retry", e.Path)
 	}
 	return fmt.Sprintf("precondition failed: %s current hash %s; re-read and retry", e.Path, e.Current)
-}
-
-// PendingApprovalError is returned by a mutating operation that was not
-// committed because its target requires a human approval (Part C). The write
-// has been recorded as a pending request (RequestID) that an approver holding
-// Capability can approve or reject. It is not a failure — the proposal was
-// accepted — so callers should report it informationally, not as an error.
-type PendingApprovalError struct {
-	RequestID  string
-	Capability string
-	Target     string
-}
-
-func (e *PendingApprovalError) Error() string {
-	return fmt.Sprintf("write to %s pending approval as %s (requires %s)", e.Target, e.RequestID, e.Capability)
 }
 
 // WalkDir walks the filesystem tree rooted at root, calling fn for each file or directory.

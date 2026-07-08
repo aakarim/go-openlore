@@ -1,7 +1,6 @@
 package openlore
 
 import (
-	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -14,7 +13,6 @@ import (
 	"sync"
 
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -24,12 +22,11 @@ import (
 // Write capability is a stateful flag (the substrate-wide readonly lock). A
 // freshly constructed DirFS is read-only; call SetWriteable to enable writes.
 // WriteFileAtomic commits whole objects via temp-file + fsync + rename(2)
-// (POSIX atomic swap), and emits a KindPostWrite event when a bus is set
-// (see WithBus).
+// (POSIX atomic swap). Post-commit reactions run through the server's
+// post-commit middleware chain, not a fan-out bus.
 type DirFS struct {
 	root  string
 	files config.FilesConfig
-	bus   *eventbus.Bus // optional; nil means no post_write fanout
 
 	// docsetRoots are the logical paths (relative to this DirFS root) that are
 	// docset boundaries for Mkdir: a folder may only be created strictly below
@@ -60,14 +57,6 @@ func NewDirFS(root string, files config.FilesConfig) *DirFS {
 	return &DirFS{root: root, files: files}
 }
 
-// WithBus sets the event bus that receives a KindPostWrite event after every
-// successful write, and returns the receiver for chaining. Pass nil to disable
-// fanout. Configure before the DirFS is shared across goroutines.
-func (d *DirFS) WithBus(bus *eventbus.Bus) *DirFS {
-	d.bus = bus
-	return d
-}
-
 // WithDocsetRoots sets the Mkdir boundary to the given logical docset roots — a
 // folder may only be created strictly below one of them — and returns the
 // receiver for chaining. Configure before the DirFS is shared across
@@ -81,11 +70,13 @@ func (d *DirFS) WithDocsetRoots(roots []string) *DirFS {
 	return d
 }
 
-// SetWriteable transitions the substrate to writable. Idempotent.
+// SetWriteable transitions the substrate to writable. Idempotent. It also
+// sweeps any staging tree left behind by a delete interrupted by a crash.
 func (d *DirFS) SetWriteable() error {
 	d.stateMu.Lock()
 	d.writeable = true
 	d.stateMu.Unlock()
+	d.sweepTrash()
 	return nil
 }
 
@@ -110,6 +101,9 @@ func (d *DirFS) WriteFileAtomic(p string, content []byte, opts vfs.WriteOpts) (s
 	}
 	if int64(len(content)) > max {
 		return "", fmt.Errorf("write rejected: %d bytes exceeds limit of %d", len(content), max)
+	}
+	if isTrashPath(vfs.CleanPath(p)) {
+		return "", fmt.Errorf("access denied: %s", p)
 	}
 	if !isAllowed(path.Base(p), d.files) {
 		return "", fmt.Errorf("access denied: %s", p)
@@ -157,14 +151,6 @@ func (d *DirFS) WriteFileAtomic(p string, content []byte, opts vfs.WriteOpts) (s
 
 	sum := sha256.Sum256(content)
 	hash := hex.EncodeToString(sum[:])
-	if d.bus != nil {
-		_ = d.bus.Publish(context.Background(), eventbus.Event{
-			Kind:        eventbus.KindPostWrite,
-			Path:        vfs.CleanPath(p),
-			ContentHash: hash,
-			Bytes:       len(content),
-		})
-	}
 	return hash, nil
 }
 
@@ -175,7 +161,7 @@ func (d *DirFS) Mkdir(p string) error {
 	if clean == "/" {
 		return fmt.Errorf("cannot create docset root: %s", p)
 	}
-	if isIgnored(p, d.files) {
+	if isTrashPath(clean) || isIgnored(p, d.files) {
 		return fmt.Errorf("access denied: %s", p)
 	}
 	if !d.insideDocset(clean) {
@@ -214,6 +200,260 @@ func (d *DirFS) insideDocset(clean string) bool {
 		}
 	}
 	return false
+}
+
+// trashDirName is the hardcoded-hidden staging root (relative to the DirFS
+// root) that RemoveAll renames doomed subtrees into before destroying them. It
+// is suppressed from every read path so it never appears in the VFS or in a
+// snapshot walk.
+const trashDirName = ".openlore-trash"
+
+// isTrashPath reports whether a cleaned logical path is (or is inside) the
+// hidden staging root.
+func isTrashPath(clean string) bool {
+	return clean == "/"+trashDirName || strings.HasPrefix(clean, "/"+trashDirName+"/")
+}
+
+// docsetRootFor returns the docset root that clean sits strictly below, and
+// whether one exists. With no docset roots configured the whole DirFS is one
+// docset rooted at "/" (which always exists).
+func (d *DirFS) docsetRootFor(clean string) (string, bool) {
+	if len(d.docsetRoots) == 0 {
+		if clean != "/" {
+			return "/", true
+		}
+		return "", false
+	}
+	for _, root := range d.docsetRoots {
+		if root == "/" {
+			if clean != "/" {
+				return "/", true
+			}
+			continue
+		}
+		if strings.HasPrefix(clean, root+"/") {
+			return root, true
+		}
+	}
+	return "", false
+}
+
+// MkdirAll creates p and any missing ancestors (mkdir -p). The enclosing docset
+// root must already exist — MkdirAll will not create a docset root — and every
+// folder it creates sits strictly below that root. An existing directory is a
+// no-op success.
+func (d *DirFS) MkdirAll(p string) error {
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return fmt.Errorf("cannot create docset root: %s", p)
+	}
+	if isTrashPath(clean) || isIgnored(p, d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	root, ok := d.docsetRootFor(clean)
+	if !ok {
+		return fmt.Errorf("cannot create folder outside a docset: %s", p)
+	}
+
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return vfs.ErrReadOnly
+	}
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	// The docset root must exist on disk so MkdirAll only creates strictly
+	// below it (never a docset root itself).
+	if root != "/" {
+		info, err := os.Stat(d.resolve(root))
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("docset root does not exist: %s", root)
+		}
+	}
+	if err := os.MkdirAll(d.resolve(p), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	return nil
+}
+
+// Remove deletes a single file or empty directory at p. It refuses a docset
+// root (or anything at/above one) and a non-empty directory.
+func (d *DirFS) Remove(p string) error {
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return fmt.Errorf("cannot delete docset root: %s", p)
+	}
+	if isTrashPath(clean) || isIgnored(p, d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	if !d.insideDocset(clean) {
+		return fmt.Errorf("cannot delete outside a docset: %s", p)
+	}
+
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return vfs.ErrReadOnly
+	}
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	full := d.resolve(p)
+	info, err := os.Stat(full)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() && !isAllowed(info.Name(), d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	if err := os.Remove(full); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemoveAll deletes p and everything under it atomically. It snapshots the raw
+// physical subtree (refusing the delete if it holds any file/dir hidden by file
+// policy), enforces opts.Expected as an exact compare-and-swap, then renames the
+// subtree into the hidden staging root (atomic visibility) and destroys the
+// staged copy synchronously.
+func (d *DirFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return fmt.Errorf("cannot delete docset root: %s", p)
+	}
+	if isTrashPath(clean) || isIgnored(p, d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	if !d.insideDocset(clean) {
+		return fmt.Errorf("cannot delete outside a docset: %s", p)
+	}
+
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return vfs.ErrReadOnly
+	}
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+
+	full := d.resolve(p)
+	if _, err := os.Stat(full); err != nil {
+		return err
+	}
+
+	// Snapshot the physical subtree and refuse if it hides anything from the
+	// VFS view (so the atomic rename cannot destroy invisible bytes). After
+	// this passes, the physical subtree equals the visible subtree, making the
+	// compare-and-swap against opts.Expected meaningful.
+	snap, err := d.rawSnapshot(clean, full)
+	if err != nil {
+		return err
+	}
+	if opts.Expected != nil {
+		if detail, equal := snapshotsEqual(opts.Expected, snap); !equal {
+			return &vfs.TreeStaleError{Path: clean, Detail: detail}
+		}
+	}
+
+	trashRoot := filepath.Join(d.root, trashDirName)
+	if err := os.MkdirAll(trashRoot, 0o700); err != nil {
+		return fmt.Errorf("prepare staging: %w", err)
+	}
+	staged := filepath.Join(trashRoot, randomToken())
+	if err := os.Rename(full, staged); err != nil {
+		return fmt.Errorf("stage delete: %w", err)
+	}
+	// The subtree is now invisible at its original path; destroy the staged
+	// copy synchronously (best-effort — the namespace change already committed).
+	_ = os.RemoveAll(staged)
+	return nil
+}
+
+// rawSnapshot walks the physical subtree at full (logical root clean) into an
+// exact TreeSnapshot with RelPaths relative to clean. It returns an error if any
+// descendant is hidden or denied by file policy.
+func (d *DirFS) rawSnapshot(clean, full string) (*vfs.TreeSnapshot, error) {
+	snap := &vfs.TreeSnapshot{Root: clean}
+	err := filepath.WalkDir(full, func(fp string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, rerr := filepath.Rel(full, fp)
+		if rerr != nil {
+			return rerr
+		}
+		rel = filepath.ToSlash(rel)
+		logical := clean
+		if rel != "." {
+			logical = path.Join(clean, rel)
+		}
+		if entry.IsDir() {
+			if rel != "." && isIgnored(logical, d.files) {
+				return fmt.Errorf("refusing delete: %s contains hidden directory %s", clean, logical)
+			}
+			snap.Ops = append(snap.Ops, vfs.TreeOp{RelPath: rel, Kind: "dir"})
+			return nil
+		}
+		if !isAllowed(entry.Name(), d.files) || isIgnored(logical, d.files) {
+			return fmt.Errorf("refusing delete: %s contains hidden file %s", clean, logical)
+		}
+		data, rerr := os.ReadFile(fp)
+		if rerr != nil {
+			return rerr
+		}
+		sum := sha256.Sum256(data)
+		snap.Ops = append(snap.Ops, vfs.TreeOp{
+			RelPath: rel,
+			Kind:    "file",
+			Hash:    hex.EncodeToString(sum[:]),
+			Size:    int64(len(data)),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
+
+// snapshotsEqual reports whether got matches want exactly (same set of paths,
+// kinds, and file hashes), returning a human-readable detail on the first
+// divergence.
+func snapshotsEqual(want, got *vfs.TreeSnapshot) (string, bool) {
+	wm := make(map[string]vfs.TreeOp, len(want.Ops))
+	for _, op := range want.Ops {
+		wm[op.RelPath] = op
+	}
+	gm := make(map[string]vfs.TreeOp, len(got.Ops))
+	for _, op := range got.Ops {
+		gm[op.RelPath] = op
+	}
+	for rel, wop := range wm {
+		gop, ok := gm[rel]
+		if !ok {
+			return fmt.Sprintf("%s was removed", rel), false
+		}
+		if gop.Kind != wop.Kind {
+			return fmt.Sprintf("%s changed kind", rel), false
+		}
+		if wop.Kind == "file" && gop.Hash != wop.Hash {
+			return fmt.Sprintf("%s changed content", rel), false
+		}
+	}
+	for rel := range gm {
+		if _, ok := wm[rel]; !ok {
+			return fmt.Sprintf("%s was added", rel), false
+		}
+	}
+	return "", true
+}
+
+// sweepTrash removes any leftover staging tree from a crashed delete. Safe to
+// call when the staging root does not exist.
+func (d *DirFS) sweepTrash() {
+	_ = os.RemoveAll(filepath.Join(d.root, trashDirName))
 }
 
 func (d *DirFS) resolve(p string) string {
@@ -276,6 +516,9 @@ func atomicWrite(full string, content []byte) error {
 }
 
 func (d *DirFS) Stat(p string) (*vfs.FileInfo, error) {
+	if isTrashPath(vfs.CleanPath(p)) {
+		return nil, os.ErrNotExist
+	}
 	full := d.resolve(p)
 	info, err := os.Stat(full)
 	if err != nil {
@@ -300,6 +543,9 @@ func (d *DirFS) Stat(p string) (*vfs.FileInfo, error) {
 }
 
 func (d *DirFS) ReadDir(p string) ([]vfs.FileInfo, error) {
+	if isTrashPath(vfs.CleanPath(p)) {
+		return nil, os.ErrNotExist
+	}
 	if isIgnored(p, d.files) {
 		return nil, fmt.Errorf("access denied: %s", p)
 	}
@@ -313,6 +559,9 @@ func (d *DirFS) ReadDir(p string) ([]vfs.FileInfo, error) {
 	var result []vfs.FileInfo
 	for _, e := range entries {
 		childPath := path.Join(p, e.Name())
+		if isTrashPath(vfs.CleanPath(childPath)) {
+			continue
+		}
 		if e.IsDir() {
 			if isIgnored(childPath, d.files) {
 				continue
@@ -339,6 +588,9 @@ func (d *DirFS) ReadDir(p string) ([]vfs.FileInfo, error) {
 }
 
 func (d *DirFS) ReadFile(p string) ([]byte, error) {
+	if isTrashPath(vfs.CleanPath(p)) {
+		return nil, os.ErrNotExist
+	}
 	if !isAllowed(path.Base(p), d.files) {
 		return nil, fmt.Errorf("access denied: %s", p)
 	}
@@ -486,6 +738,68 @@ func (m *MergeFS) Mkdir(p string) error {
 		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
 	}
 	return w.Mkdir(subPath)
+}
+
+// MkdirAll routes recursive folder creation to the resolved mount. Creating a
+// docset (the merge root, or a mount root) is not allowed.
+func (m *MergeFS) MkdirAll(p string) error {
+	subPath, fsys, err := m.resolve(p)
+	if err != nil {
+		return err
+	}
+	if fsys == nil {
+		return fmt.Errorf("cannot create docset at filesystem root: %s", p)
+	}
+	if vfs.CleanPath(subPath) == "/" {
+		return fmt.Errorf("cannot create docset root: %s", p)
+	}
+	w, ok := fsys.(vfs.WritableFS)
+	if !ok {
+		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+	}
+	return w.MkdirAll(subPath)
+}
+
+// Remove routes a single-file/empty-dir delete to the resolved mount. Deleting
+// the merge root or a mount root is not allowed.
+func (m *MergeFS) Remove(p string) error {
+	subPath, fsys, err := m.resolve(p)
+	if err != nil {
+		return err
+	}
+	if fsys == nil {
+		return fmt.Errorf("cannot delete filesystem root: %s", p)
+	}
+	if vfs.CleanPath(subPath) == "/" {
+		return fmt.Errorf("cannot delete docset root: %s", p)
+	}
+	w, ok := fsys.(vfs.WritableFS)
+	if !ok {
+		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+	}
+	return w.Remove(subPath)
+}
+
+// RemoveAll routes a whole-tree delete to the resolved mount. A changeset spans
+// exactly one writable backend; deleting the merge root or a mount root is not
+// allowed. The Expected snapshot is passed through unchanged (its RelPaths are
+// relative to the target, so they are mount-agnostic).
+func (m *MergeFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
+	subPath, fsys, err := m.resolve(p)
+	if err != nil {
+		return err
+	}
+	if fsys == nil {
+		return fmt.Errorf("cannot delete filesystem root: %s", p)
+	}
+	if vfs.CleanPath(subPath) == "/" {
+		return fmt.Errorf("cannot delete docset root: %s", p)
+	}
+	w, ok := fsys.(vfs.WritableFS)
+	if !ok {
+		return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+	}
+	return w.RemoveAll(subPath, opts)
 }
 
 func (m *MergeFS) resolve(p string) (string, vfs.FileSystem, error) {

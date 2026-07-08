@@ -1,0 +1,54 @@
+package openlore
+
+import (
+	"context"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
+)
+
+// readChainFS runs the read (before-read) middleware chain in front of every
+// Stat / ReadDir / ReadFile, then delegates to the wrapped read view. The chain
+// is a gate, not a transform: a middleware can run work (e.g. a debounced git
+// pull) and abort the read by returning an error, but it never rewrites the
+// bytes returned.
+//
+// It wraps the read view near the substrate (inside the write wrappers), so the
+// gate fires for every read that actually reaches storage — including the
+// internal reads other layers perform (e.g. a CAS base read). Writes never pass
+// through it: they go to the log via middlewareFS, and the read chain is a
+// read-only concern.
+type readChainFS struct {
+	vfs.FileSystem // read delegation
+
+	actor Actor
+	gate  ReadHandler // composed read chain; nil-safe via newReadChainFS guard
+}
+
+// newReadChainFS wraps base so each read first runs gate. Callers only install
+// it when at least one read middleware is registered.
+func newReadChainFS(base vfs.FileSystem, actor Actor, gate ReadHandler) *readChainFS {
+	return &readChainFS{FileSystem: base, actor: actor, gate: gate}
+}
+
+func (r *readChainFS) Stat(p string) (*vfs.FileInfo, error) {
+	if err := r.gate(context.Background(), ReadOp{Path: p, Kind: ReadKindStat, Actor: r.actor}); err != nil {
+		return nil, err
+	}
+	return r.FileSystem.Stat(p)
+}
+
+func (r *readChainFS) ReadDir(p string) ([]vfs.FileInfo, error) {
+	if err := r.gate(context.Background(), ReadOp{Path: p, Kind: ReadKindDir, Actor: r.actor}); err != nil {
+		return nil, err
+	}
+	return r.FileSystem.ReadDir(p)
+}
+
+func (r *readChainFS) ReadFile(p string) ([]byte, error) {
+	if err := r.gate(context.Background(), ReadOp{Path: p, Kind: ReadKindFile, Actor: r.actor}); err != nil {
+		return nil, err
+	}
+	return r.FileSystem.ReadFile(p)
+}
+
+var _ vfs.FileSystem = (*readChainFS)(nil)

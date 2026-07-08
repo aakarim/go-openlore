@@ -3,6 +3,7 @@ package openlore
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync"
 
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -18,7 +19,7 @@ import (
 // last-read hash no longer matches. A successful write updates the tracked hash
 // so a caller can write the same file repeatedly after a single read.
 //
-// It sits outside scopedWriteFS/approvalFS so it observes all reads and all
+// It sits outside scopedWriteFS so it observes all reads and all
 // writes, and forwards the optional scope introspection (vfs.WriteScopeFS) used
 // by `spawn` fail-fast checks.
 type readTrackingFS struct {
@@ -52,6 +53,26 @@ func (f *readTrackingFS) WriteFileAtomic(p string, data []byte, opts vfs.WriteOp
 	return h, err
 }
 
+// Remove delegates the single-file/empty-dir delete and, on success, forgets
+// the tracked hash for the removed path.
+func (f *readTrackingFS) Remove(p string) error {
+	err := f.WritableFS.Remove(p)
+	if err == nil {
+		f.forget(p)
+	}
+	return err
+}
+
+// RemoveAll delegates the whole-tree delete and, on success, forgets the
+// tracked hash for the removed path and every descendant under it.
+func (f *readTrackingFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
+	err := f.WritableFS.RemoveAll(p, opts)
+	if err == nil {
+		f.forgetSubtree(p)
+	}
+	return err
+}
+
 // LastReadHash reports the hash recorded when p was last read or written
 // (vfs.ReadTracker).
 func (f *readTrackingFS) LastReadHash(p string) (string, bool) {
@@ -74,6 +95,26 @@ func (f *readTrackingFS) CanWrite(p string) bool {
 func (f *readTrackingFS) note(p, hash string) {
 	f.mu.Lock()
 	f.reads[vfs.CleanPath(p)] = hash
+	f.mu.Unlock()
+}
+
+// forget drops the tracked hash for a single path.
+func (f *readTrackingFS) forget(p string) {
+	f.mu.Lock()
+	delete(f.reads, vfs.CleanPath(p))
+	f.mu.Unlock()
+}
+
+// forgetSubtree drops the tracked hash for a path and everything under it.
+func (f *readTrackingFS) forgetSubtree(p string) {
+	clean := vfs.CleanPath(p)
+	prefix := clean + "/"
+	f.mu.Lock()
+	for tracked := range f.reads {
+		if tracked == clean || strings.HasPrefix(tracked, prefix) {
+			delete(f.reads, tracked)
+		}
+	}
 	f.mu.Unlock()
 }
 

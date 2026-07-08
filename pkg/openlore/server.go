@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,8 +19,6 @@ import (
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
-	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
-	"github.com/aakarim/go-openlore/pkg/openlore/hooks"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -61,16 +58,29 @@ type Server struct {
 	onDisconnect OnDisconnectFunc
 	sessionFSFn  SessionFSFn
 
-	// requests is the control-plane store for human-gated write requests
-	// (Part C). Served read-only at /requests.
-	requests *RequestStore
-
-	// bus is the storage-event bus. Write events (post_write) and approval
-	// events (approval_pending) fan out to configured shell hooks.
-	bus *eventbus.Bus
-
 	// jobs runs async external work (Part D), surfaced read-only at /jobs.
 	jobs *JobManager
+
+	// writeLog is the single ordered write log + serialized applier: the sole
+	// writer to the substrate. Non-nil only when the substrate is writable
+	// (readonly=false). Every session's mutations funnel through it, so writes,
+	// directory creation, and removals are globally ordered. Closed on Shutdown.
+	writeLog *writeLog
+
+	// writeMW is the admission (pre-commit) middleware contributed by plugins,
+	// composed after the fixed scope layer and before the log in registration
+	// order. Empty in core go-openlore (the mechanism carries no policy).
+	writeMW []WriteMiddleware
+
+	// readMW is the read (before-read) middleware contributed by plugins, run in
+	// front of Stat/ReadDir/ReadFile in registration order. Empty in core
+	// go-openlore; when empty no read wrapper is installed (zero read overhead).
+	readMW []ReadMiddleware
+
+	// postCommitMW is the post-commit middleware contributed by plugins, run at
+	// the applier after a durable commit (feed emit, post_write hooks) in
+	// registration order. Empty in core go-openlore.
+	postCommitMW []PostCommitMiddleware
 
 	// Bearer-token auth for the MCP + HTTP API (docs/mcp-bearer-auth.md).
 	// identityStore is always set (resolves claims → Identity). The rest are
@@ -91,6 +101,24 @@ type Server struct {
 // rootDir is the primary directory to serve (can be empty if using Mount).
 // Options are applied using the functional options pattern via config.Option.
 func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
+	return newServerWithRoot(rootDir, nil, opts...)
+}
+
+// NewServerWithRootFS creates a server whose root filesystem is a caller-supplied
+// vfs.FileSystem, set BEFORE the writable substrate and the ordered write log are
+// established. Use this (instead of NewServer + SetRootBashFS) when the root is a
+// custom writable backend and writes should flow through the ordered log: a late
+// SetRootBashFS runs after SetWriteable()/newWriteLog and would leave the log
+// with no writable backend at construction time.
+func NewServerWithRootFS(root vfs.FileSystem, opts ...config.Option) (*Server, error) {
+	return newServerWithRoot("", root, opts...)
+}
+
+// newServerWithRoot is the shared constructor. When rootFS is non-nil it becomes
+// the merge root (rootDir is ignored); otherwise rootDir (if non-empty) is served
+// via a DirFS. The root is installed before the writable block so the write log's
+// substrate is live at construction.
+func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Option) (*Server, error) {
 	cfg, err := config.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -110,12 +138,19 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		metrics: &metrics.Metrics{},
 		logger:  logger,
 		motd:    cfg.MOTD,
-		bus:     eventbus.New(logger),
 	}
 
-	// Wire configured shell hooks (post_write, approval_pending, …) onto the
-	// bus. Empty hook config is valid — nothing fires.
-	hooks.Subscribe(s.bus, hooks.Config{DataDir: cfg.DataDir, Hooks: cfg.Hooks}, nil, logger)
+	// Built-in shellexec plugin: external commands as middleware on the
+	// read/write paths (pre_read, pre_commit, post_write). Registered here,
+	// before the write log is built, so its post-commit middleware is composed
+	// into the applier's chain.
+	if !cfg.Shellexec.IsEmpty() {
+		plug, err := newShellexec(cfg.Shellexec, cfg.DataDir, ShellRunner{}, logger)
+		if err != nil {
+			return nil, fmt.Errorf("configuring shellexec plugin: %w", err)
+		}
+		s.registerPlugin(plug)
+	}
 
 	// Load auth config
 	if cfg.AuthFile != "" {
@@ -162,35 +197,21 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		}
 	}
 
-	// Set up root directory
-	if rootDir != "" {
-		rootFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots).WithBus(s.bus)
+	// Set up root directory. A caller-supplied rootFS wins (installed before the
+	// writable block so the write log has a live substrate); otherwise serve
+	// rootDir via a DirFS.
+	if rootFS != nil {
 		s.merge.SetRoot(rootFS)
+	} else if rootDir != "" {
+		dirFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots)
+		s.merge.SetRoot(dirFS)
 	}
 
 	// Set up additional folders. Each folder mount is itself a docset, so any
 	// non-root path within it is a valid Mkdir target (default boundary).
 	for _, folder := range cfg.Folders {
-		folderFS := NewDirFS(folder.Path, cfg.Files).WithBus(s.bus)
+		folderFS := NewDirFS(folder.Path, cfg.Files)
 		s.merge.Mount(folder.Name, folderFS)
-	}
-
-	// Control plane: the human-gated-write request store (Part C), served
-	// read-only at /requests. Opt-in via data_dir — without it, the approval
-	// control plane is absent (the embedded KB server, local `openlore .`).
-	// The mount is a system mount, so it is visible to every session regardless
-	// of lore; writes to it are denied (RequestsFS is not a WritableFS).
-	if cfg.DataDir != "" {
-		store, err := NewRequestStore(filepath.Join(cfg.DataDir, "requests"))
-		if err != nil {
-			return nil, fmt.Errorf("initializing request store: %w", err)
-		}
-		s.requests = store
-		s.merge.MountSystem("requests", NewRequestsFS(store))
-		// The approve/reject commands resolve requests by replaying the
-		// proposed write through the raw substrate (s.merge), bypassing
-		// per-session scope/approval wrappers — the approval is the authority.
-		cmds.Approvals = &approvalBackend{store: store, commitFS: s.merge}
 	}
 
 	// Enable the experimental writable substrate when the global lock is open.
@@ -201,11 +222,17 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 		}
 		logger.Info("writable substrate enabled (readonly=false)")
 
+		// The single ordered write log + serialized applier over the writable
+		// substrate. Every session routes its mutations here (via middlewareFS),
+		// so it is the sole writer and gives globally ordered writes/removes. The
+		// applier runs the post-commit chain after each durable commit.
+		s.writeLog = newWriteLog(s.merge, s.postCommitChain(), logger, 0)
+
 		// Async external work (Part D): the `spawn` command runs a command in a
 		// bounded goroutine and writes its stdout back through the captured
 		// scoped FS. Only meaningful when writes are possible. Jobs are in-memory
 		// (lost on restart) and surfaced read-only at /jobs.
-		s.jobs = NewJobManager(cfg.MaxJobs, hooks.ShellRunner{}, s.bus, logger)
+		s.jobs = NewJobManager(cfg.MaxJobs, ShellRunner{}, logger)
 		cmds.Jobs = s.jobs
 		s.merge.MountSystem("jobs", NewJobsFS(s.jobs))
 	}
@@ -605,9 +632,102 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 	}
 }
 
+// RegisterPlugin wires a plugin's middleware into the admission, read, and
+// post-commit chains, in registration order. It is the exported seam for
+// consumers (e.g. the knowledge-backend approvals plugin) to contribute
+// middleware after NewServer returns.
+//
+// Admission (write) and read middleware take effect for every session created
+// afterward, because those chains are composed per-session in buildSessionShell.
+// Post-commit middleware is refreshed onto the running write log here, so a
+// post-commit provider registered after construction still fires on commits.
+//
+// Call it before serving; it is not safe to call concurrently with live traffic.
+func (s *Server) RegisterPlugin(p any) {
+	s.registerPlugin(p)
+	if s.writeLog != nil {
+		s.writeLog.SetPostCommit(s.postCommitChain())
+	}
+}
+
+// CommitChangeSet appends an already-authorized ChangeSet directly to the ordered
+// log, skipping the admission chain but still running the serialized applier
+// (compare-and-swap against current state) and the post-commit chain. It is how a
+// consumer commits a previously-deferred change after human approval: the change
+// already passed admission when it was first parked, so re-running admission would
+// let the approval middleware defer it again in an infinite loop.
+//
+// It returns the committed hash (empty for non-write actions) or a CAS/commit
+// error (*vfs.PreconditionError / *vfs.TreeStaleError on drift). If the substrate
+// is read-only (no write log), it returns vfs.ErrReadOnly.
+func (s *Server) CommitChangeSet(ctx context.Context, actor Actor, cs vfs.ChangeSet) (WriteResult, error) {
+	if s.writeLog == nil {
+		return WriteResult{}, vfs.ErrReadOnly
+	}
+	h, err := s.writeLog.Submit(ctx, actor, cs)
+	return WriteResult{Hash: h}, err
+}
+
+// registerPlugin wires any middleware a plugin provides into the admission,
+// read, and post-commit chains, in registration order. Must be called during
+// NewServer before the write log is built: read/write middleware are read
+// per-session at buildSessionShell time, but the post-commit chain is composed
+// once when newWriteLog is constructed.
+func (s *Server) registerPlugin(p any) {
+	if wp, ok := p.(WriteMiddlewareProvider); ok {
+		s.writeMW = append(s.writeMW, wp.WriteMiddleware()...)
+	}
+	if rp, ok := p.(ReadMiddlewareProvider); ok {
+		s.readMW = append(s.readMW, rp.ReadMiddleware()...)
+	}
+	if pc, ok := p.(PostCommitProvider); ok {
+		s.postCommitMW = append(s.postCommitMW, pc.PostCommitMiddleware()...)
+	}
+}
+
+// writeChain composes the admission (pre-commit) middleware around a terminal
+// handler that submits the ChangeSet to the global log and awaits the committed
+// hash. Plugin middleware (s.writeMW) runs in registration order before the log;
+// a middleware may allow (call next), defer (return *vfs.PendingChangeError), or
+// reject (return an error). Core go-openlore registers no middleware, so the
+// chain is just the terminal submit.
+func (s *Server) writeChain() WriteHandler {
+	terminal := func(ctx context.Context, op WriteOp) (WriteResult, error) {
+		h, err := s.writeLog.Submit(ctx, op.Actor, op.ChangeSet)
+		return WriteResult{Hash: h}, err
+	}
+	return chainWrite(terminal, s.writeMW...)
+}
+
+// readChain composes the read (before-read) middleware around a no-op terminal
+// (the actual read is performed by readChainFS after the gate passes). Plugin
+// middleware runs in registration order; any non-nil error aborts the read.
+func (s *Server) readChain() ReadHandler {
+	terminal := func(ctx context.Context, op ReadOp) error { return nil }
+	return chainRead(terminal, s.readMW...)
+}
+
+// postCommitChain composes the post-commit middleware around a no-op terminal.
+// It runs at the applier after a durable commit (feed emit, post_write hooks),
+// in registration order; failures are logged and the log keeps moving.
+func (s *Server) postCommitChain() PostCommitHandler {
+	terminal := func(ctx context.Context, info CommitInfo) error { return nil }
+	return chainPostCommit(terminal, s.postCommitMW...)
+}
+
+// hasCapability reports whether have contains want.
+func hasCapability(have []string, want string) bool {
+	for _, c := range have {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 // buildSessionShell constructs a fully-configured shell scoped to the given
-// identity: a per-identity filesystem (lore FilteredView, approval gating,
-// write isolation, read-tracking CAS), capability-gated allowed actions, and
+// identity: a per-identity filesystem (lore FilteredView, write isolation,
+// read-tracking CAS), capability-gated allowed actions, and
 // OPENLORE_* environment variables. This is the single source of truth for
 // per-identity scoping, shared by the SSH shell handler and the MCP/HTTP tool
 // handlers so all transports enforce the same access rules.
@@ -626,11 +746,20 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 			sessionFS = s.merge.FilteredView(allowed)
 		}
 	}
-	// Part C approval gating: writes to gated paths become pending requests
-	// instead of committing. This wrapper sits *inside* scopedWriteFS so an
-	// out-of-scope write is hard-denied before it can become a request.
-	if s.authEnforced && s.requests != nil && s.hasApprovalRules() {
-		sessionFS = newApprovalFS(sessionFS, s.requests, s.requiresApproval, id.IdentityName, s.bus)
+	// Read (before-read) gate: run the read middleware chain in front of every
+	// Stat/ReadDir/ReadFile so a plugin can (e.g.) refresh the substrate or
+	// abort a read. Innermost read wrapper so it fires for every read that
+	// reaches storage. Only installed when a plugin registered read middleware.
+	if len(s.readMW) > 0 {
+		sessionFS = newReadChainFS(sessionFS, Actor{ID: id.User}, s.readChain())
+	}
+	// Route this session's mutations through the single global ordered log:
+	// every write/mkdir/remove becomes a ChangeSet, runs the admission chain,
+	// and is submitted to the serialized applier (the sole substrate writer).
+	// Innermost writable wrapper, so the outer layers (scope) can deny or defer
+	// a mutation before it ever becomes a log entry.
+	if s.writeLog != nil {
+		sessionFS = newMiddlewareFS(sessionFS, Actor{ID: id.User}, s.writeChain())
 	}
 	// canWrite is the single authority gate shared by the FS layer and the
 	// action layer: an identity may write only when auth is enforced, it is a
@@ -679,12 +808,6 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	if s.authEnforced {
 		if canWrite {
 			allowed := []cmds.Action{cmds.ActionWrite, cmds.ActionPublish}
-			// An identity holding any approval capability may also see and
-			// use approve/reject (the exact capability is checked per
-			// request when the command runs).
-			if len(id.Capabilities) > 0 {
-				allowed = append(allowed, cmds.ActionApprove)
-			}
 			// spawn runs an external command as the OpenLore service
 			// user, so it's gated on an explicit `spawn` capability
 			// (Part D) — never granted to ordinary writers.
@@ -710,9 +833,6 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	// `cd` with no arguments).
 	if id.HomeDir != "" {
 		sh.SetEnv("HOME", id.HomeDir)
-	}
-	if len(id.Capabilities) > 0 {
-		sh.SetEnv("OPENLORE_CAPABILITIES", strings.Join(id.Capabilities, ","))
 	}
 	// Expose the user as the agent ID so commands like `kb` and
 	// the writable VFS can scope operations per-agent.
@@ -760,7 +880,6 @@ func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 			Writable:   writable[name],
 			Home:       name == id.HomeDocset,
 			HasPublish: ds.PublishDir != "",
-			Approval:   len(ds.RequiresApproval) > 0,
 		})
 	}
 	return out
@@ -1135,6 +1254,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.jobs != nil {
 		if !s.jobs.Drain(jobDrainTimeout) {
 			s.logger.Warn("shutdown: async jobs still running after drain timeout", "timeout", jobDrainTimeout)
+		}
+	}
+	// Stop accepting writes and drain the log so every acknowledged mutation
+	// commits before we exit (in-flight + queued entries still get their reply).
+	if s.writeLog != nil {
+		if err := s.writeLog.Close(ctx); err != nil {
+			s.logger.Warn("shutdown: write log did not drain before deadline", "err", err)
 		}
 	}
 	if s.srv == nil {

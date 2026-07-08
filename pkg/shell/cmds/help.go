@@ -77,13 +77,6 @@ func CmdHelp(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin i
 		fmt.Fprintln(w, "  publish <docset> <path>                  Publish content from stdin")
 		fmt.Fprintln(w, "")
 	}
-	if ctx.ActionAllowed(ActionApprove) {
-		fmt.Fprintln(w, "APPROVALS")
-		fmt.Fprintln(w, "  approve <request-id>                     Approve a pending write (commits it)")
-		fmt.Fprintln(w, "  reject <request-id>                      Reject a pending write")
-		fmt.Fprintln(w, "  cat /requests/<id>                       Review a pending request + diff")
-		fmt.Fprintln(w, "")
-	}
 	if ctx.ActionAllowed(ActionSpawn) {
 		fmt.Fprintln(w, "ASYNC EXTERNAL WORK")
 		fmt.Fprintln(w, "  spawn --writes <path> [--append] -- <cmd...>  Run a command async; write its output back")

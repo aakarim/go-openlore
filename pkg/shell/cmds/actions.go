@@ -17,8 +17,6 @@ const (
 	ActionWrite Action = "write"
 	// ActionPublish publishes new sources (publish, kb publish).
 	ActionPublish Action = "publish"
-	// ActionApprove resolves human-gated write requests (approve, reject).
-	ActionApprove Action = "approve"
 	// ActionSpawn runs external commands asynchronously and writes their output
 	// back into the lore (spawn). It is powerful — the command runs as the
 	// OpenLore service user — so it is granted only to identities the operator
@@ -33,9 +31,9 @@ var commandActions = map[string]Action{
 	"write":   ActionWrite,
 	"patch":   ActionWrite,
 	"tee":     ActionWrite,
+	"mkdir":   ActionWrite,
+	"rm":      ActionWrite,
 	"publish": ActionPublish,
-	"approve": ActionApprove,
-	"reject":  ActionApprove,
 	"spawn":   ActionSpawn,
 }
 

@@ -12,7 +12,7 @@ import (
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )
 
-// fakeRunner is a deterministic hooks.Runner for tests: it returns out/err
+// fakeRunner is a deterministic Runner for tests: it returns out/err
 // without execing anything.
 type fakeRunner struct {
 	out []byte
@@ -37,7 +37,7 @@ func spawnFixture(t *testing.T, runner fakeRunner) (*shell.Shell, *JobManager, *
 		t.Fatalf("seed mkdir: %v", err)
 	}
 
-	mgr := NewJobManager(4, runner, nil, nil)
+	mgr := NewJobManager(4, runner, nil)
 	saved := cmds.Jobs
 	cmds.Jobs = mgr
 	t.Cleanup(func() { cmds.Jobs = saved })
@@ -126,56 +126,6 @@ func TestSpawn_CommandFailureMarksFailed(t *testing.T) {
 	}
 	if _, err := base.ReadFile("/ops/live.md"); err == nil {
 		t.Fatal("a failed command must not commit anything")
-	}
-}
-
-func TestSpawn_ApprovalGatedTargetBecomesPending(t *testing.T) {
-	base := NewDirFS(t.TempDir(), config.FilesConfig{})
-	if err := base.SetWriteable(); err != nil {
-		t.Fatalf("SetWriteable: %v", err)
-	}
-	if err := base.Mkdir("/ops"); err != nil {
-		t.Fatalf("seed mkdir: %v", err)
-	}
-	store, err := NewRequestStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewRequestStore: %v", err)
-	}
-	savedApprovals := cmds.Approvals
-	cmds.Approvals = &approvalBackend{store: store, commitFS: base}
-	t.Cleanup(func() { cmds.Approvals = savedApprovals })
-
-	decide := func(p string) (string, bool) {
-		if p == "/ops/live.md" {
-			return "approve@oncall", true
-		}
-		return "", false
-	}
-	af := newApprovalFS(base, store, decide, "jared", nil)
-	scoped := newScopedWriteFS(af, []string{"/ops"})
-
-	mgr := NewJobManager(4, fakeRunner{out: []byte("applied")}, nil, nil)
-	savedJobs := cmds.Jobs
-	cmds.Jobs = mgr
-	t.Cleanup(func() { cmds.Jobs = savedJobs })
-
-	sh := shell.NewShell(scoped)
-	sh.SetAllowedActions([]cmds.Action{cmds.ActionWrite, cmds.ActionSpawn})
-	sh.SetEnv("OPENLORE_IDENTITY", "jared")
-
-	if _, errs, code := run(sh, "spawn --writes /ops/live.md -- kubectl apply"); code != 0 {
-		t.Fatalf("spawn submit should succeed: code=%d err=%q", code, errs)
-	}
-	mgr.Drain(2 * time.Second)
-	job := waitJob(t, mgr)
-	if job.State != JobDone || !strings.Contains(job.Note, "pending approval") {
-		t.Fatalf("gated write should be pending, state=%s note=%q", job.State, job.Note)
-	}
-	if _, err := base.ReadFile("/ops/live.md"); err == nil {
-		t.Fatal("gated target must not be committed before approval")
-	}
-	if list, _ := store.List(); len(list) != 1 {
-		t.Fatalf("want exactly 1 pending request, got %d", len(list))
 	}
 }
 

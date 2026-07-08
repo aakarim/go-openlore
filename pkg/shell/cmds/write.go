@@ -146,16 +146,25 @@ func WriteFileCASMsg(ctx CmdContext, errW io.Writer, cmdName, p string, data []b
 	return writeResultMsg(errW, cmdName, p, err)
 }
 
+// pendingChangeLine renders the informational (exit-0) line for a mutation a
+// middleware parked as a pending change. Ref is the consumer-owned handle used
+// to resolve it later; it may be empty.
+func pendingChangeLine(cmdName, target string, pce *vfs.PendingChangeError) string {
+	if pce.Ref != "" {
+		return fmt.Sprintf("%s: %s change pending as %s", cmdName, target, pce.Ref)
+	}
+	return fmt.Sprintf("%s: %s change pending", cmdName, target)
+}
+
 // writeResultMsg renders the shared exit code + message for a write result.
 func writeResultMsg(errW io.Writer, cmdName, p string, err error) int {
 	if err == nil {
 		return 0
 	}
-	var pae *vfs.PendingApprovalError
-	if errors.As(err, &pae) {
-		// Not a failure: the write was accepted as a pending request.
-		fmt.Fprintf(errW, "%s: %s pending approval as %s (requires %s)\n", cmdName, p, pae.RequestID, pae.Capability)
-		fmt.Fprintf(errW, "  track: /requests/%s\n", pae.RequestID)
+	var pce *vfs.PendingChangeError
+	if errors.As(err, &pce) {
+		// Not a failure: a middleware parked the write as a pending change.
+		fmt.Fprintln(errW, pendingChangeLine(cmdName, p, pce))
 		return 0
 	}
 	var pe *vfs.PreconditionError

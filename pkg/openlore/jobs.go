@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/aakarim/go-openlore/pkg/openlore/eventbus"
-	"github.com/aakarim/go-openlore/pkg/openlore/hooks"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
@@ -58,19 +55,18 @@ type JobManager struct {
 	order  []string // insertion order, newest last
 	sem    chan struct{}
 	wg     sync.WaitGroup
-	runner hooks.Runner
+	runner Runner
 	logger *slog.Logger
-	bus    *eventbus.Bus
 }
 
 // NewJobManager creates a manager with at most maxConcurrent jobs running at
-// once. runner defaults to a real `sh -c` runner; bus may be nil.
-func NewJobManager(maxConcurrent int, runner hooks.Runner, bus *eventbus.Bus, logger *slog.Logger) *JobManager {
+// once. runner defaults to a real `sh -c` runner.
+func NewJobManager(maxConcurrent int, runner Runner, logger *slog.Logger) *JobManager {
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
 	if runner == nil {
-		runner = hooks.ShellRunner{}
+		runner = ShellRunner{}
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -80,7 +76,6 @@ func NewJobManager(maxConcurrent int, runner hooks.Runner, bus *eventbus.Bus, lo
 		sem:    make(chan struct{}, maxConcurrent),
 		runner: runner,
 		logger: logger,
-		bus:    bus,
 	}
 }
 
@@ -125,14 +120,9 @@ func (m *JobManager) run(job *Job, spec cmds.JobSpec) {
 	}
 
 	// Commit stdout through the normal write seam on the frozen context, so
-	// CAS / per-docset policy / approval gating all apply uniformly.
+	// CAS / per-docset policy all apply uniformly.
 	_, werr := cmds.WriteFile(spec.WriteCtx, spec.Target, out, spec.Append)
 	if werr != nil {
-		var pae *vfs.PendingApprovalError
-		if errors.As(werr, &pae) {
-			m.finish(job, JobDone, fmt.Sprintf("pending approval as %s (requires %s)", pae.RequestID, pae.Capability))
-			return
-		}
 		m.finish(job, JobFailed, fmt.Sprintf("write-back failed: %v", werr))
 		return
 	}

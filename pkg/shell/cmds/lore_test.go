@@ -45,7 +45,7 @@ func TestLore_UnknownSubcommandExitsOne(t *testing.T) {
 func TestLoreDocsets_Table(t *testing.T) {
 	docsets := []cmds.DocsetInfo{
 		{Name: "public", Paths: []string{"/docs/public", "/docs/getting-started.md"}},
-		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Writable: true, Approval: true},
+		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Writable: true},
 		{Name: "home", Paths: []string{"/home/backend"}, Writable: true, Home: true, HasPublish: true},
 	}
 	out, _, code := runLore(t, docsets, "lore docsets")
@@ -71,7 +71,7 @@ func TestLoreDocsets_Table(t *testing.T) {
 		}
 	}
 	assertRow(lines[1], "public", "r", "-", "/docs/public,/docs/getting-started.md")
-	assertRow(lines[2], "backend", "rw", "approval", "/docs/backend,/docs/api")
+	assertRow(lines[2], "backend", "rw", "-", "/docs/backend,/docs/api")
 	assertRow(lines[3], "home", "rw", "home,publish", "/home/backend")
 }
 

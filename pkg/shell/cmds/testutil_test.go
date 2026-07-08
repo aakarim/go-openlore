@@ -2,6 +2,8 @@ package cmds_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,11 +13,15 @@ import (
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// mapFS is an in-memory filesystem for testing.
+// mapFS is an in-memory filesystem for testing. It implements vfs.WritableFS so
+// mutating commands (mkdir, rm, redirects) can be exercised directly.
 type mapFS struct {
-	Files map[string]*vfs.FileInfo
-	Dirs  map[string][]string
+	Files    map[string]*vfs.FileInfo
+	Dirs     map[string][]string
+	readonly bool
 }
+
+var _ vfs.WritableFS = (*mapFS)(nil)
 
 func newMapFS() *mapFS {
 	return &mapFS{
@@ -115,6 +121,111 @@ func (m *mapFS) ReadFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("is a directory: %s", path)
 	}
 	return fi.Content, nil
+}
+
+func (m *mapFS) SetWriteable() error { m.readonly = false; return nil }
+func (m *mapFS) SetReadonly() error  { m.readonly = true; return nil }
+
+func (m *mapFS) WriteFileAtomic(p string, data []byte, _ vfs.WriteOpts) (string, error) {
+	if m.readonly {
+		return "", vfs.ErrReadOnly
+	}
+	m.AddFile(vfs.CleanPath(p), string(data))
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (m *mapFS) Mkdir(p string) error {
+	if m.readonly {
+		return vfs.ErrReadOnly
+	}
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return fmt.Errorf("cannot create docset root")
+	}
+	parent := dirName(clean)
+	if parent == "" {
+		parent = "/"
+	}
+	if fi, ok := m.Files[parent]; !ok || !fi.Dir {
+		return fmt.Errorf("mkdir: %s: no such file or directory", parent)
+	}
+	if _, ok := m.Files[clean]; ok {
+		return fmt.Errorf("mkdir: %s: file exists", p)
+	}
+	m.AddDir(clean)
+	return nil
+}
+
+func (m *mapFS) MkdirAll(p string) error {
+	if m.readonly {
+		return vfs.ErrReadOnly
+	}
+	clean := vfs.CleanPath(p)
+	if clean == "/" {
+		return nil
+	}
+	cur := ""
+	for _, part := range strings.Split(strings.TrimPrefix(clean, "/"), "/") {
+		cur += "/" + part
+		if fi, ok := m.Files[cur]; ok {
+			if !fi.Dir {
+				return fmt.Errorf("mkdir: %s: not a directory", cur)
+			}
+			continue
+		}
+		m.AddDir(cur)
+	}
+	return nil
+}
+
+func (m *mapFS) Remove(p string) error {
+	if m.readonly {
+		return vfs.ErrReadOnly
+	}
+	clean := vfs.CleanPath(p)
+	fi, ok := m.Files[clean]
+	if !ok {
+		return fmt.Errorf("rm: %s: no such file or directory", p)
+	}
+	if fi.Dir && len(m.Dirs[clean]) > 0 {
+		return fmt.Errorf("rm: %s: directory not empty", p)
+	}
+	m.removeEntry(clean)
+	return nil
+}
+
+func (m *mapFS) RemoveAll(p string, _ vfs.RemoveOpts) error {
+	if m.readonly {
+		return vfs.ErrReadOnly
+	}
+	clean := vfs.CleanPath(p)
+	if _, ok := m.Files[clean]; !ok {
+		return fmt.Errorf("rm: %s: no such file or directory", p)
+	}
+	prefix := clean + "/"
+	for tracked := range m.Files {
+		if tracked == clean || strings.HasPrefix(tracked, prefix) {
+			m.removeEntry(tracked)
+		}
+	}
+	return nil
+}
+
+func (m *mapFS) removeEntry(clean string) {
+	delete(m.Files, clean)
+	delete(m.Dirs, clean)
+	parent := dirName(clean)
+	if parent == "" {
+		parent = "/"
+	}
+	children := m.Dirs[parent]
+	for i, c := range children {
+		if c == baseName(clean) {
+			m.Dirs[parent] = append(children[:i], children[i+1:]...)
+			break
+		}
+	}
 }
 
 func baseName(path string) string {

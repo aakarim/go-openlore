@@ -55,10 +55,6 @@ type DocsetInfo struct {
 	// HasPublish reports whether the docset has a publish inbox (publish_dir).
 	// It says nothing about the inbox path or size — that lives in PublishTarget.
 	HasPublish bool
-	// Approval reports whether the docset declares any requires_approval rules.
-	// Gating can be path-scoped, so this means "some or all writes may be
-	// gated," not "every write is gated."
-	Approval bool
 }
 
 // PublishTarget is a writable publish inbox: its logical docset name (the first

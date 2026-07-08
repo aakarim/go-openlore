@@ -1,0 +1,184 @@
+package openlore
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/aakarim/go-openlore/pkg/vfs"
+)
+
+// deferMWProvider is a test WriteMiddlewareProvider that defers (parks) any write
+// whose target has gatedPrefix, and passes everything else through.
+type deferMWProvider struct {
+	gatedPrefix string
+	ref         string
+}
+
+func (p deferMWProvider) WriteMiddleware() []WriteMiddleware {
+	return []WriteMiddleware{func(next WriteHandler) WriteHandler {
+		return func(ctx context.Context, op WriteOp) (WriteResult, error) {
+			if strings.HasPrefix(op.ChangeSet.Target, p.gatedPrefix) {
+				return WriteResult{}, &vfs.PendingChangeError{ChangeSet: op.ChangeSet, Ref: p.ref}
+			}
+			return next(ctx, op)
+		}
+	}}
+}
+
+// recordPostCommit is a test PostCommitProvider that records every CommitInfo.
+type recordPostCommit struct {
+	mu    sync.Mutex
+	infos []CommitInfo
+}
+
+func (r *recordPostCommit) PostCommitMiddleware() []PostCommitMiddleware {
+	return []PostCommitMiddleware{func(next PostCommitHandler) PostCommitHandler {
+		return func(ctx context.Context, info CommitInfo) error {
+			r.mu.Lock()
+			r.infos = append(r.infos, info)
+			r.mu.Unlock()
+			return next(ctx, info)
+		}
+	}}
+}
+
+func (r *recordPostCommit) snapshot() []CommitInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]CommitInfo(nil), r.infos...)
+}
+
+func newSeamServer(t *testing.T, root vfs.WritableFS) *Server {
+	t.Helper()
+	s, err := NewServerWithRootFS(root, WithReadonly(false))
+	if err != nil {
+		t.Fatalf("NewServerWithRootFS: %v", err)
+	}
+	if s.writeLog == nil {
+		t.Fatal("NewServerWithRootFS(WithReadonly(false)) must build a write log")
+	}
+	return s
+}
+
+func TestNewServerWithRootFS_WriteLogLive(t *testing.T) {
+	fs := &wlRecordingFS{}
+	s := newSeamServer(t, fs)
+
+	res, err := s.CommitChangeSet(context.Background(), Actor{ID: "a"}, writeCS("/x"))
+	if err != nil {
+		t.Fatalf("CommitChangeSet: %v", err)
+	}
+	if res.Hash != "h:/x" {
+		t.Fatalf("hash = %q, want h:/x", res.Hash)
+	}
+	if got := fs.order(); len(got) != 1 || got[0] != "/x" {
+		t.Fatalf("applied = %v, want [/x]", got)
+	}
+}
+
+func TestRegisterPlugin_WriteMiddlewareGatesLaterWrite(t *testing.T) {
+	fs := &wlRecordingFS{}
+	s := newSeamServer(t, fs)
+
+	// Registered AFTER construction — must take effect on the composed chain.
+	s.RegisterPlugin(deferMWProvider{gatedPrefix: "/gated", ref: "held-1"})
+
+	chain := s.writeChain()
+
+	// A gated write is deferred (parked) and never reaches the substrate.
+	_, err := chain(context.Background(), WriteOp{ChangeSet: writeCS("/gated/a"), Actor: Actor{ID: "a"}})
+	var pce *vfs.PendingChangeError
+	if !errors.As(err, &pce) || pce.Ref != "held-1" {
+		t.Fatalf("gated write: want PendingChangeError held-1, got %v", err)
+	}
+	if len(fs.order()) != 0 {
+		t.Fatalf("gated write must not commit; applied = %v", fs.order())
+	}
+
+	// An ungated write commits.
+	res, err := chain(context.Background(), WriteOp{ChangeSet: writeCS("/ok"), Actor: Actor{ID: "a"}})
+	if err != nil || res.Hash != "h:/ok" {
+		t.Fatalf("ungated write: h=%q err=%v", res.Hash, err)
+	}
+	if got := fs.order(); len(got) != 1 || got[0] != "/ok" {
+		t.Fatalf("applied = %v, want [/ok]", got)
+	}
+}
+
+func TestRegisterPlugin_PostCommitFiresAfterConstruction(t *testing.T) {
+	fs := &wlRecordingFS{}
+	s := newSeamServer(t, fs)
+
+	rec := &recordPostCommit{}
+	s.RegisterPlugin(rec) // post-commit provider registered after the log was built
+
+	_, err := s.CommitChangeSet(context.Background(), Actor{ID: "alice", Extra: map[string]string{"approver": "bob"}}, writeCS("/x"))
+	if err != nil {
+		t.Fatalf("CommitChangeSet: %v", err)
+	}
+	infos := rec.snapshot()
+	if len(infos) != 1 {
+		t.Fatalf("post-commit fired %d times, want 1", len(infos))
+	}
+	if infos[0].Actor.ID != "alice" || infos[0].Actor.Extra["approver"] != "bob" {
+		t.Fatalf("actor = %+v", infos[0].Actor)
+	}
+	if infos[0].Hash != "h:/x" || infos[0].ChangeSet.Target != "/x" {
+		t.Fatalf("commit info = %+v", infos[0])
+	}
+}
+
+func TestCommitChangeSet_SkipsAdmission(t *testing.T) {
+	fs := &wlRecordingFS{}
+	s := newSeamServer(t, fs)
+
+	// A middleware that defers EVERY write. Admission (writeChain) would park.
+	s.RegisterPlugin(deferMWProvider{gatedPrefix: "/", ref: "held"})
+
+	// Sanity: admission defers.
+	if _, err := s.writeChain()(context.Background(), WriteOp{ChangeSet: writeCS("/x"), Actor: Actor{ID: "a"}}); err == nil {
+		t.Fatal("admission chain should defer every write in this test")
+	}
+
+	// CommitChangeSet bypasses admission and commits directly.
+	res, err := s.CommitChangeSet(context.Background(), Actor{ID: "a"}, writeCS("/x"))
+	if err != nil {
+		t.Fatalf("CommitChangeSet must skip admission and commit: %v", err)
+	}
+	if res.Hash != "h:/x" {
+		t.Fatalf("hash = %q, want h:/x", res.Hash)
+	}
+	if got := fs.order(); len(got) != 1 || got[0] != "/x" {
+		t.Fatalf("applied = %v, want [/x]", got)
+	}
+}
+
+func TestCommitChangeSet_CASErrorPropagates(t *testing.T) {
+	base := "b0"
+	fs := &wlRecordingFS{errFor: map[string]error{"/x": &vfs.PreconditionError{Path: "/x", Current: "now"}}}
+	s := newSeamServer(t, fs)
+
+	_, err := s.CommitChangeSet(context.Background(), Actor{ID: "a"}, vfs.ChangeSet{
+		Target: "/x",
+		Action: vfs.ChangeActionWrite,
+		Write:  &vfs.WriteChange{Bytes: []byte("x"), Opts: vfs.WriteOpts{IfMatch: &base}},
+	})
+	var pe *vfs.PreconditionError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want *vfs.PreconditionError, got %v", err)
+	}
+}
+
+func TestCommitChangeSet_ReadonlyServer(t *testing.T) {
+	// Default config is read-only → no write log → CommitChangeSet is read-only.
+	s, err := NewServer("")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if _, err := s.CommitChangeSet(context.Background(), Actor{}, writeCS("/x")); err == nil {
+		t.Fatal("CommitChangeSet on a read-only server must return an error")
+	}
+}
