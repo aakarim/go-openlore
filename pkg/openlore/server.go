@@ -201,6 +201,16 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 		}
 	}
 
+	// Built-in OKF plugin: validates Open Knowledge Format documents on write
+	// (pre-commit admission middleware). Registered here — after docsets are
+	// resolved (auth config or the unenforced-mode public docset) but before the
+	// write log is built — because it resolves the effective OKF config per write
+	// from the docset that owns the target path. Only registered when at least
+	// one docset carries OKF config.
+	if anyDocsetHasOKF(s.auth.Docsets) {
+		s.registerPlugin(newOKF(s.auth.Docsets, logger))
+	}
+
 	// Set up root directory. A caller-supplied rootFS wins (installed before the
 	// writable block so the write log has a live substrate); otherwise serve
 	// rootDir via a DirFS.

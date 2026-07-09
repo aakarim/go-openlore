@@ -119,6 +119,26 @@ func (c ShellexecConfig) IsEmpty() bool {
 	return len(c.PreRead) == 0 && len(c.PreCommit) == 0 && len(c.PostWrite) == 0
 }
 
+// OKFDocsetConfig configures the built-in Open Knowledge Format validator for a
+// docset. Its presence on a DocsetSpec activates OKF validation across that
+// docset's subtree (defaults: enforce=true, patterns=["*.md"]).
+//
+// It lives on the docset (in lore.json) rather than as a global block so OKF
+// scoping is defined in the same place as the docset's paths and grants and can
+// never drift from them: a write is validated by the OKF config of the docset
+// that owns its path (the longest matching display root, exactly as authz
+// resolves grants). Include/exclude for narrower subtrees is expressed with
+// nested docsets — a child docset with OKF adds validation to that subtree; a
+// child docset without OKF shadows a parent's OKF and exempts that subtree.
+type OKFDocsetConfig struct {
+	// Enforce rejects non-conformant writes when true (nil → true, the default).
+	// When false, a non-conformant write is logged but allowed through.
+	Enforce *bool `json:"enforce,omitempty"`
+	// Patterns are globs matched against a write target's basename to select
+	// which files are validated. Empty defaults to ["*.md"].
+	Patterns []string `json:"patterns,omitempty"`
+}
+
 // PasskeysConfig holds WebAuthn passkey configuration.
 type PasskeysConfig struct {
 	Enabled      bool
@@ -199,6 +219,11 @@ type DocsetSpec struct {
 	// to this docset. "" inherits Config.WriteConflictPolicy; "hash" forces
 	// compare-and-swap overwrites; "last_write_wins" forces unconditional ones.
 	WriteConflictPolicy string `json:"write_conflict_policy,omitempty"`
+
+	// OKF, when non-nil, activates the built-in Open Knowledge Format validator
+	// for this docset's subtree (see OKFDocsetConfig). nil means OKF is off for
+	// this docset; scope narrower subtrees with nested docsets.
+	OKF *OKFDocsetConfig `json:"okf,omitempty"`
 }
 
 // PathMapping represents a path entry — either a simple string path or a

@@ -369,6 +369,68 @@ write seam, preconditions, approvals, events/hooks, and async jobs — see
 [`docs/write-system.md`](docs/write-system.md). Connected agents can read the
 user-facing guide with `cat /writes.md`.
 
+## Plugins
+
+OpenLore's write/read paths are extensible via **middleware plugins** — Go
+values registered with the server that hook the admission (pre-commit), read,
+and post-commit chains. A plugin implements one or more provider interfaces
+(`WriteMiddlewareProvider`, `ReadMiddlewareProvider`, `PostCommitProvider`,
+`GrantTypeProvider`) and is capability-detected at registration. Built-in
+plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers add their
+own via `Server.RegisterPlugin`.
+
+### OKF Validator
+
+The built-in **Open Knowledge Format** plugin validates knowledge documents on
+write against [OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
+OKF is a directory of markdown files with YAML frontmatter; a document is
+conformant when every non-reserved `.md` file opens with a parseable frontmatter
+block containing a non-empty `type` field. Reserved files (`index.md`,
+`log.md`) are validated leniently.
+
+Enable it **per docset** in `lore.json` by adding an `okf` block to a docset —
+so OKF scoping reads the same display roots as the docset's paths and grants and
+can never drift from them. It runs as pre-commit admission middleware, so a
+non-conformant write to that docset's subtree (via `>`, `tee`, `patch`, `sed
+-i`, `publish`, `spawn`, or any verb funneling through the write log) is
+**rejected before it hits disk**:
+
+```json
+{
+  "docsets": {
+    "wiki": {
+      "paths": ["/wiki"],
+      "okf": {
+        "patterns": ["*.md"],
+        "enforce": true
+      }
+    }
+  }
+}
+```
+
+A write is governed by the OKF config of the docset that **owns** its target
+path — the longest matching display root, exactly as grants resolve. Scope
+narrower subtrees with **nested docsets**: a child docset that carries `okf`
+adds validation to that subtree; a child docset without `okf` shadows a parent's
+OKF and exempts that subtree. For example, make `/adil` a docset with no `okf`
+and `/adil/wiki` a nested docset with `okf` to enforce OKF only under
+`/adil/wiki` while leaving the rest of `/adil` untouched. `patterns` defaults to
+`["*.md"]` and `enforce` defaults to `true` (set `false` to log and allow).
+
+The same validation logic is a dependency-light library at
+[`pkg/okf`](pkg/okf), so downstream tooling (e.g. a `kb save`/`kb publish`
+command) can import `okf.Validate` / `okf.ParseFrontmatter` and enforce
+identical conformance without going through the write path:
+
+```go
+import "github.com/aakarim/go-openlore/pkg/okf"
+
+if err := okf.Validate(path, content); err != nil {
+    // not OKF-conformant
+}
+```
+
 ## CLI Commands
 
 ```
