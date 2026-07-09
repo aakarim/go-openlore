@@ -36,6 +36,21 @@ func (s *Server) validateGrants() error {
 			}
 		}
 	}
+	// Two docsets sharing an identical display root are an ambiguous access
+	// boundary: read scoping resolves the governing docset by root length while
+	// write authorization (mostSpecificDocset) breaks ties by name, so the two
+	// could disagree on who governs the shared subtree. Fail closed at startup
+	// rather than serve an inconsistent authorization model.
+	owner := map[string]string{}
+	for name, ds := range s.auth.Docsets {
+		for _, pm := range ds.Paths {
+			root := displayPath(pm)
+			if other, dup := owner[root]; dup {
+				return fmt.Errorf("auth config: docsets %q and %q share display root %q (ambiguous access boundary)", other, name, root)
+			}
+			owner[root] = name
+		}
+	}
 	return nil
 }
 
@@ -49,37 +64,69 @@ func displayPath(pm config.PathMapping) string {
 	return vfs.CleanPath(d)
 }
 
-// grantForPath resolves the most-specific docset the identity holds a grant on
-// that contains display path p, returning the docset spec and its grant type. A
-// path may sit inside several granted docsets (nesting); the longest matching
-// display root wins so a nested docset overrides its parent.
-func (s *Server) grantForPath(id Identity, p string) (config.DocsetSpec, GrantType, bool) {
+// mostSpecificDocset resolves the single docset that governs display path p: the
+// one whose display root is the longest prefix of p, across ALL configured
+// docsets (not just the ones an identity holds a grant on). Every docset is an
+// access boundary that carves its subtree out of any ancestor docset, so this is
+// the authority that decides access to p — a grant on an ancestor docset never
+// reaches into a nested docset. Ties on root length are broken by docset name
+// for determinism (overlapping identical roots are an ambiguous config).
+func (s *Server) mostSpecificDocset(p string) (string, config.DocsetSpec, bool) {
 	clean := vfs.CleanPath(p)
 	bestLen := -1
+	bestName := ""
 	var bestDS config.DocsetSpec
-	var bestGrant GrantType
-	for name, grantName := range id.Grants {
-		ds, ok := s.auth.Docsets[name]
-		if !ok {
-			continue
-		}
-		grant, ok := s.grants.get(grantName)
-		if !ok {
-			continue
-		}
+	for name, ds := range s.auth.Docsets {
 		for _, pm := range ds.Paths {
 			root := displayPath(pm)
-			if pathWithinRoot(root, clean) && len(root) > bestLen {
+			if !pathWithinRoot(root, clean) {
+				continue
+			}
+			if len(root) > bestLen || (len(root) == bestLen && name < bestName) {
 				bestLen = len(root)
+				bestName = name
 				bestDS = ds
-				bestGrant = grant
 			}
 		}
 	}
 	if bestLen < 0 {
+		return "", config.DocsetSpec{}, false
+	}
+	return bestName, bestDS, true
+}
+
+// grantForPath resolves the grant that governs display path p for this identity.
+// It finds the most-specific docset covering p (across all docsets) and returns
+// its grant only if the identity actually holds one on THAT docset. A grant on
+// an ancestor docset (e.g. the root docset) does not authorize p when a nested
+// docset carves it out and the identity has no grant on the nested docset.
+func (s *Server) grantForPath(id Identity, p string) (config.DocsetSpec, GrantType, bool) {
+	name, ds, ok := s.mostSpecificDocset(p)
+	if !ok {
 		return config.DocsetSpec{}, nil, false
 	}
-	return bestDS, bestGrant, true
+	grantName, ok := id.Grants[name]
+	if !ok {
+		return config.DocsetSpec{}, nil, false // carved out: no grant on the governing docset
+	}
+	grant, ok := s.grants.get(grantName)
+	if !ok {
+		return config.DocsetSpec{}, nil, false
+	}
+	return ds, grant, true
+}
+
+// allDocsetRoots returns the display roots of every configured docset — the full
+// set of access boundaries used to carve nested docsets out of ancestor grants
+// during read scoping.
+func (s *Server) allDocsetRoots() []string {
+	var roots []string
+	for _, ds := range s.auth.Docsets {
+		for _, pm := range ds.Paths {
+			roots = append(roots, displayPath(pm))
+		}
+	}
+	return roots
 }
 
 // identityCanWrite is the per-operation write authorizer. A mutation to display
@@ -129,34 +176,60 @@ func (s *Server) readableRoots(id Identity) []string {
 	return roots
 }
 
-// scopedReadFS confines a session's reads (Stat / ReadDir / ReadFile) to a fixed
-// set of display roots, plus the ancestor directories that lead down to them so
-// the tree stays navigable. A ReadDir at an ancestor lists only entries that are
-// themselves readable (a granted root, or an ancestor of one), so an identity
-// only ever sees the docsets it was granted — never the sibling docsets sharing
-// the same backing root filesystem.
+// scopedReadFS confines a session's reads (Stat / ReadDir / ReadFile) to the
+// display roots it may read, plus the ancestor directories that lead down to them
+// so the tree stays navigable. Every configured docset root is also an access
+// boundary: a path is only readable when the MOST-SPECIFIC docset covering it is
+// one of the readable roots. This means a read grant on an ancestor docset (e.g.
+// the root docset "/") does not reach into a nested docset the identity has no
+// grant on — the nested docset overrides the ancestor. So an identity only ever
+// sees the docsets it was granted, never the sibling (or carved-out nested)
+// docsets sharing the same backing filesystem.
 type scopedReadFS struct {
 	vfs.FileSystem
-	roots []string // cleaned readable display roots
+	roots      []string // cleaned readable display roots (granted docsets + system mounts)
+	boundaries []string // cleaned display roots of ALL docsets (carve-out boundaries)
 }
 
-func newScopedReadFS(base vfs.FileSystem, roots []string) *scopedReadFS {
-	cleaned := make([]string, 0, len(roots))
-	for _, r := range roots {
-		cleaned = append(cleaned, vfs.CleanPath(r))
+func newScopedReadFS(base vfs.FileSystem, roots, boundaries []string) *scopedReadFS {
+	clean := func(in []string) []string {
+		out := make([]string, 0, len(in))
+		for _, r := range in {
+			out = append(out, vfs.CleanPath(r))
+		}
+		return out
 	}
-	return &scopedReadFS{FileSystem: base, roots: cleaned}
+	return &scopedReadFS{FileSystem: base, roots: clean(roots), boundaries: clean(boundaries)}
 }
 
-// within reports whether p sits at or under one of the readable roots.
+// within reports whether p is readable: some readable root covers it, and no
+// more-specific docset boundary carves it out. The governing authority for p is
+// the longest docset root that is a prefix of p; p is readable only when that
+// governing root is itself a readable root (or p sits under a readable
+// non-docset root like a system mount, with no deeper docset boundary).
 func (s *scopedReadFS) within(p string) bool {
 	clean := vfs.CleanPath(p)
+	bestRoot := ""
 	for _, root := range s.roots {
-		if pathWithinRoot(root, clean) {
-			return true
+		if pathWithinRoot(root, clean) && (bestRoot == "" || len(root) > len(bestRoot)) {
+			bestRoot = root
 		}
 	}
-	return false
+	if bestRoot == "" {
+		return false // no readable root covers p
+	}
+	bestBoundary := ""
+	for _, b := range s.boundaries {
+		if pathWithinRoot(b, clean) && (bestBoundary == "" || len(b) > len(bestBoundary)) {
+			bestBoundary = b
+		}
+	}
+	// A docset boundary strictly more specific than the best readable root means
+	// a nested docset the identity lacks a grant on carves p out.
+	if len(bestBoundary) > len(bestRoot) {
+		return false
+	}
+	return true
 }
 
 // ancestor reports whether p is a proper ancestor directory of some readable
@@ -203,11 +276,10 @@ func (s *scopedReadFS) ReadDir(p string) ([]vfs.FileInfo, error) {
 		return nil, err
 	}
 	clean := vfs.CleanPath(p)
-	// Fully inside a readable root: every entry is readable.
-	if s.within(clean) {
-		return entries, nil
-	}
-	// At an ancestor: keep only children that are themselves readable.
+	// Keep only children that are themselves readable. This filters at every
+	// level (not just ancestors): a directory fully inside a readable root can
+	// still contain a nested docset the identity lacks a grant on, which must be
+	// carved out of the listing.
 	out := entries[:0]
 	for _, e := range entries {
 		child := clean

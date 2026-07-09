@@ -14,10 +14,16 @@ import (
 )
 
 // LoreBrowserHandler serves an authenticated web browser over the filesystem.
-// Unauthenticated requests are redirected to the passkey login page. The set of
-// paths a session may view is restricted to the docsets granted by the
-// session's lore spec.
-func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
+// Unauthenticated requests are redirected to the passkey login page.
+//
+// fsForIdentity returns the per-identity, read-scoped filesystem for a resolved
+// session identity — the SAME layered session FS used by the SSH shell, SFTP,
+// and MCP/HTTP transports. The browser performs all Stat/ReadDir/ReadFile calls
+// through that scoped FS, so docset boundaries (including the carve-out of nested
+// docsets from an ancestor grant) are enforced identically here. There is no
+// separate allow-list in the browser: the scoped FS is the sole authority on
+// what a session may see.
+func (p *Passkeys) LoreBrowserHandler(fsForIdentity func(identity string) vfs.FileSystem) http.Handler {
 	lorePath := "/" + strings.Trim(p.cfg.LorePath, "/")
 	if lorePath == "/" {
 		lorePath = "/lore"
@@ -31,7 +37,11 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 			return
 		}
 
-		allowed := p.allowedPrefixes(session.Identity)
+		fsys := fsForIdentity(session.Identity)
+		if fsys == nil {
+			http.Error(w, "403 forbidden", http.StatusForbidden)
+			return
+		}
 
 		// Map the request path under lorePath onto a filesystem path.
 		rel := strings.TrimPrefix(r.URL.Path, lorePath)
@@ -41,11 +51,6 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 		}
 		fsPath := vfs.CleanPath(rel)
 
-		if !pathAllowed(fsPath, allowed) {
-			http.Error(w, "403 forbidden", http.StatusForbidden)
-			return
-		}
-
 		info, err := fsys.Stat(fsPath)
 		if err != nil {
 			http.NotFound(w, r)
@@ -53,7 +58,7 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 		}
 
 		if info.Dir {
-			p.renderDir(w, fsys, lorePath, fsPath, allowed)
+			p.renderDir(w, fsys, lorePath, fsPath)
 			return
 		}
 
@@ -71,57 +76,7 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 	})
 }
 
-// allowedPrefixes returns the display path prefixes an identity may browse,
-// resolved from the docsets it holds any grant on.
-func (p *Passkeys) allowedPrefixes(identity string) []string {
-	if p.auth == nil {
-		return []string{"/"}
-	}
-	var grants map[string]string
-	for _, ident := range p.auth.Identities {
-		if ident.Name == identity {
-			grants = ident.Docsets
-			break
-		}
-	}
-	if grants == nil {
-		return nil
-	}
-	var prefixes []string
-	for name := range grants {
-		spec, ok := p.auth.Docsets[name]
-		if !ok {
-			continue
-		}
-		for _, pm := range spec.Paths {
-			disp := pm.Display
-			if disp == "" {
-				disp = pm.Source
-			}
-			prefixes = append(prefixes, vfs.CleanPath(disp))
-		}
-	}
-	return prefixes
-}
-
-func pathAllowed(p string, allowed []string) bool {
-	for _, pref := range allowed {
-		if pref == "/" {
-			return true
-		}
-		if p == pref || strings.HasPrefix(p, pref+"/") {
-			return true
-		}
-		// Allow browsing ancestor directories of an allowed prefix so the
-		// listing can show the way down to it.
-		if strings.HasPrefix(pref, p+"/") || p == "/" {
-			return true
-		}
-	}
-	return false
-}
-
-func (p *Passkeys) renderDir(w http.ResponseWriter, fsys vfs.FileSystem, lorePath, fsPath string, allowed []string) {
+func (p *Passkeys) renderDir(w http.ResponseWriter, fsys vfs.FileSystem, lorePath, fsPath string) {
 	entries, err := fsys.ReadDir(fsPath)
 	if err != nil {
 		http.Error(w, "404 not found", http.StatusNotFound)
@@ -152,9 +107,6 @@ func (p *Passkeys) renderDir(w http.ResponseWriter, fsys vfs.FileSystem, lorePat
 	b.WriteString("<ul>")
 	for _, e := range entries {
 		child := path.Join(fsPath, e.FileName)
-		if !pathAllowed(child, allowed) {
-			continue
-		}
 		href := lorePath + child
 		name := html.EscapeString(e.FileName)
 		if e.Dir {

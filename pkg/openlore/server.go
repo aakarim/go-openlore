@@ -704,7 +704,7 @@ func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
 	// unenforced/trusted mode the session sees the whole merge FS (all mounts).
 	sessionFS := vfs.FileSystem(s.merge)
 	if s.authEnforced {
-		sessionFS = newScopedReadFS(sessionFS, s.readableRoots(id))
+		sessionFS = newScopedReadFS(sessionFS, s.readableRoots(id), s.allDocsetRoots())
 	}
 	// Read (before-read) gate: run the read middleware chain in front of every
 	// Stat/ReadDir/ReadFile so a plugin can (e.g.) refresh the substrate or
@@ -1200,7 +1200,18 @@ func (s *Server) ListenAndServe() error {
 					lorePath = "/lore"
 				}
 				lorePath = "/" + strings.Trim(lorePath, "/")
-				httpCfg.ExtraHandlers[lorePath+"/"] = s.passkeys.LoreBrowserHandler(s.fs)
+				// The /lore web browser reads through the same per-identity
+				// scoped session FS as every other transport, so docset
+				// boundaries (including nested-docset carve-outs) are enforced
+				// identically. An unresolved identity falls back to the
+				// anonymous/default authority.
+				httpCfg.ExtraHandlers[lorePath+"/"] = s.passkeys.LoreBrowserHandler(func(name string) vfs.FileSystem {
+					id, ok := s.identityForName(name)
+					if !ok {
+						id = s.anonymousIdentity()
+					}
+					return s.buildSessionFS(id)
+				})
 
 				cmds.PublishBaseURL = baseURL + lorePath
 			}
