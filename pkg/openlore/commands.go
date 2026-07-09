@@ -1,0 +1,22 @@
+package openlore
+
+import "github.com/aakarim/go-openlore/pkg/shell/cmds"
+
+// CommandProvider is implemented by a plugin that contributes `lore`
+// subcommands. registerPlugin detects it and registers each returned command
+// with the lore dispatcher (cmds.RegisterLoreSub), so a plugin can extend the
+// `lore` introspection surface without the dispatcher knowing about it. Core
+// subcommands (docsets, meta) register themselves the same way.
+type CommandProvider interface {
+	LoreCommands() []cmds.LoreSub
+}
+
+// MetaExtenderProvider is implemented by a plugin that enriches `lore meta`
+// records. registerPlugin detects it and registers each extender
+// (cmds.RegisterMetaExtender). This is how the okf plugin annotates documents
+// with OKF conformance in `lore meta` output where OKF applies, so read-side
+// discovery agrees with write-side enforcement — without coupling the generic
+// `lore meta` reader to the OKF spec.
+type MetaExtenderProvider interface {
+	MetaExtenders() []cmds.MetaExtender
+}

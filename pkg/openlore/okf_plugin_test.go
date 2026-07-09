@@ -1,11 +1,17 @@
 package openlore
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aakarim/go-openlore/internal/config"
+	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -223,6 +229,116 @@ func TestOKFPlugin_RejectionIsHardError(t *testing.T) {
 	var pce *vfs.PendingChangeError
 	if errors.As(err, &pce) {
 		t.Fatal("OKF rejection must be a hard error, not a PendingChangeError")
+	}
+}
+
+// okfExtend runs the plugin's single meta extender against one document.
+func okfExtend(p *okfPlugin, absPath, content string) map[string]any {
+	exts := p.MetaExtenders()
+	if len(exts) != 1 {
+		panic("expected exactly one OKF meta extender")
+	}
+	return exts[0](absPath, []byte(content), nil)
+}
+
+func TestOKFMetaExtender_AnnotatesConformant(t *testing.T) {
+	p := pluginWith(docsWithOKF())
+	got := okfExtend(p, "/docs/good.md", validDoc)
+	okfField, ok := got["okf"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected okf field, got %v", got)
+	}
+	if okfField["valid"] != true {
+		t.Fatalf("expected valid=true, got %v", okfField)
+	}
+	if _, has := okfField["error"]; has {
+		t.Fatalf("conformant doc should carry no error: %v", okfField)
+	}
+}
+
+func TestOKFMetaExtender_AnnotatesNonConformant(t *testing.T) {
+	p := pluginWith(docsWithOKF())
+	got := okfExtend(p, "/docs/bad.md", invalidDoc)
+	okfField := got["okf"].(map[string]any)
+	if okfField["valid"] != false {
+		t.Fatalf("expected valid=false, got %v", okfField)
+	}
+	if okfField["error"] == nil || okfField["error"] == "" {
+		t.Fatalf("non-conformant doc should carry an error: %v", okfField)
+	}
+}
+
+func TestOKFMetaExtender_SilentWhereOKFDoesNotApply(t *testing.T) {
+	p := pluginWith(docsWithOKF())
+	// Outside the OKF docset: no annotation.
+	if got := okfExtend(p, "/other/x.md", invalidDoc); got != nil {
+		t.Fatalf("path outside OKF docset must not be annotated, got %v", got)
+	}
+	// Inside the docset but not matching patterns: no annotation.
+	if got := okfExtend(p, "/docs/x.txt", invalidDoc); got != nil {
+		t.Fatalf("non-matching file must not be annotated, got %v", got)
+	}
+}
+
+func TestOKFPlugin_ImplementsMetaExtenderProvider(t *testing.T) {
+	var _ MetaExtenderProvider = pluginWith(docsWithOKF())
+}
+
+// End-to-end: registerPlugin must wire the okf meta extender into the global
+// lore-meta registry so `lore meta` annotates docs with OKF conformance where
+// OKF applies. Runs a real shell over a DirFS. (No reset helper is available
+// from this package; the registered extender is scoped to /wiki and harmless to
+// other tests, none of which run `lore meta`.)
+func TestRegisterPlugin_WiresOKFIntoLoreMeta(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile := func(rel, content string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("wiki/good.md", validDoc)
+	// Has a parseable frontmatter block (so `lore meta` emits it) but is not
+	// OKF-conformant (no `type`), so the extender flags it invalid.
+	writeFile("wiki/bad.md", "---\ntitle: No Type\n---\nbody\n")
+
+	docsets := map[string]config.DocsetSpec{
+		"wiki": docset("/wiki", &config.OKFDocsetConfig{}),
+	}
+	s := &Server{grants: newGrantRegistry()}
+	s.registerPlugin(newOKF(docsets, nil)) // must call cmds.RegisterMetaExtender
+
+	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
+	sh.SetCwd("/wiki")
+	var out, errOut bytes.Buffer
+	if code := sh.ExecPipeline("lore meta", &out, &errOut, nil); code != 0 {
+		t.Fatalf("lore meta exit=%d stderr=%s", code, errOut.String())
+	}
+
+	byPath := map[string]map[string]any{}
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("bad NDJSON %q: %v", line, err)
+		}
+		byPath[m["path"].(string)] = m
+	}
+
+	good, ok := byPath["good.md"]
+	if !ok {
+		t.Fatalf("good.md missing from output: %s", out.String())
+	}
+	if okfField, _ := good["okf"].(map[string]any); okfField == nil || okfField["valid"] != true {
+		t.Fatalf("good.md should be annotated valid: %v", good["okf"])
+	}
+	bad := byPath["bad.md"]
+	if okfField, _ := bad["okf"].(map[string]any); okfField == nil || okfField["valid"] != false {
+		t.Fatalf("bad.md should be annotated invalid: %v", bad["okf"])
 	}
 }
 

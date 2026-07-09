@@ -652,6 +652,16 @@ func (s *Server) registerPlugin(p any) {
 			s.grants.register(g)
 		}
 	}
+	if cp, ok := p.(CommandProvider); ok {
+		for _, c := range cp.LoreCommands() {
+			cmds.RegisterLoreSub(c)
+		}
+	}
+	if mp, ok := p.(MetaExtenderProvider); ok {
+		for _, e := range mp.MetaExtenders() {
+			cmds.RegisterMetaExtender(e)
+		}
+	}
 }
 
 // writeChain composes the admission (pre-commit) middleware around a terminal

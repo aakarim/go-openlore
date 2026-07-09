@@ -8,6 +8,7 @@ import (
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/okf"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -126,4 +127,32 @@ func (p *okfPlugin) WriteMiddleware() []WriteMiddleware {
 	}
 }
 
-var _ WriteMiddlewareProvider = (*okfPlugin)(nil)
+// MetaExtenders implements MetaExtenderProvider. It contributes a single
+// extender that annotates a `lore meta` record with OKF conformance — but only
+// for documents where OKF actually applies (the owning docset has OKF and the
+// path matches its patterns), so read-side discovery agrees exactly with
+// write-side enforcement. The added field is:
+//
+//	"okf": {"valid": true}                       // conformant
+//	"okf": {"valid": false, "error": "<reason>"} // non-conformant
+func (p *okfPlugin) MetaExtenders() []cmds.MetaExtender {
+	return []cmds.MetaExtender{
+		func(absPath string, content []byte, _ map[string]any) map[string]any {
+			oc := p.resolve(absPath)
+			if oc == nil || !matchesOKFPatterns(absPath, oc.Patterns) {
+				return nil // OKF does not govern this path
+			}
+			status := map[string]any{"valid": true}
+			if err := okf.Validate(absPath, content); err != nil {
+				status["valid"] = false
+				status["error"] = err.Error()
+			}
+			return map[string]any{"okf": status}
+		},
+	}
+}
+
+var (
+	_ WriteMiddlewareProvider = (*okfPlugin)(nil)
+	_ MetaExtenderProvider    = (*okfPlugin)(nil)
+)

@@ -3,40 +3,88 @@ package cmds
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
+// LoreSub is a registered `lore` subcommand. Core subcommands (docsets, meta)
+// register themselves in init; plugins contribute more via the host
+// (openlore.CommandProvider → RegisterLoreSub), so the introspection surface is
+// extensible without reshaping the `lore` dispatcher.
+type LoreSub struct {
+	// Name is the subcommand word, e.g. "meta" in `lore meta`.
+	Name string
+	// Summary is the one-line description shown in `lore` usage.
+	Summary string
+	// Run executes the subcommand. args are the tokens after the subcommand
+	// name (so `lore meta backend` calls Run with ["backend"]).
+	Run CmdFunc
+}
+
+// loreSubs is the registry of `lore` subcommands, keyed by name.
+var loreSubs = map[string]LoreSub{}
+
+// RegisterLoreSub adds (or replaces) a `lore` subcommand. Called from init for
+// core subcommands and by the host when a plugin contributes commands.
+func RegisterLoreSub(sub LoreSub) {
+	loreSubs[sub.Name] = sub
+}
+
 // CmdLore is the `lore` introspection dispatcher. Bare `lore` prints usage and
-// exits 0; an unknown subcommand errors to stderr and exits 1. Subcommands
-// report per-session facts the agent needs to navigate its access.
+// exits 0; an unknown subcommand errors to stderr and exits 1. Subcommands are
+// resolved from the loreSubs registry, so plugins can extend the surface.
 func CmdLore(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		printLoreUsage(w)
 		return 0
 	}
-	switch args[0] {
-	case "docsets":
-		return cmdLoreDocsets(ctx, args[1:], w, errW)
-	default:
-		fmt.Fprintf(errW, "lore: unknown command %q\n", args[0])
-		printLoreUsage(errW)
-		return 1
+	if sub, ok := loreSubs[args[0]]; ok {
+		return sub.Run(ctx, args[1:], w, errW, stdin)
 	}
+	fmt.Fprintf(errW, "lore: unknown command %q\n", args[0])
+	printLoreUsage(errW)
+	return 1
 }
 
 func printLoreUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: lore <command>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  docsets   List the docsets you can access, their paths, and attributes")
+	subs := make([]LoreSub, 0, len(loreSubs))
+	for _, s := range loreSubs {
+		subs = append(subs, s)
+	}
+	sort.Slice(subs, func(i, j int) bool { return subs[i].Name < subs[j].Name })
+	var nameW int
+	for _, s := range subs {
+		if len(s.Name) > nameW {
+			nameW = len(s.Name)
+		}
+	}
+	for _, s := range subs {
+		fmt.Fprintf(w, "  %-*s   %s\n", nameW, s.Name, s.Summary)
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Run 'lore <command>' for a specific view.")
+}
+
+func init() {
+	RegisterLoreSub(LoreSub{
+		Name:    "docsets",
+		Summary: "List the docsets you can access, their paths, and attributes",
+		Run:     cmdLoreDocsets,
+	})
+	RegisterLoreSub(LoreSub{
+		Name:    "meta",
+		Summary: "Emit each document's frontmatter as JSON (NDJSON), cwd-scoped",
+		Run:     cmdLoreMeta,
+	})
 }
 
 // cmdLoreDocsets prints an aligned, greppable table of the session's accessible
 // docsets: name, direct access (r/rw), attribute tokens (home,publish),
 // and display paths.
-func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer) int {
+func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	docsets := ctx.Docsets()
 
 	rows := [][4]string{{"DOCSET", "GRANT", "ATTRIBUTES", "PATHS"}}

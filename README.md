@@ -204,6 +204,7 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 | `whoami` | Print your identity |
 | `lore` | Introspection dispatcher (run `lore` for subcommands) |
 | `lore docsets` | List the docsets you can access, their grant, paths, and attributes |
+| `lore meta` | Emit each document's frontmatter as NDJSON, cwd-scoped (see [Plugins](#plugins)) |
 
 `lore docsets` prints an aligned, greppable table:
 
@@ -371,13 +372,24 @@ user-facing guide with `cat /writes.md`.
 
 ## Plugins
 
-OpenLore's write/read paths are extensible via **middleware plugins** — Go
-values registered with the server that hook the admission (pre-commit), read,
-and post-commit chains. A plugin implements one or more provider interfaces
-(`WriteMiddlewareProvider`, `ReadMiddlewareProvider`, `PostCommitProvider`,
-`GrantTypeProvider`) and is capability-detected at registration. Built-in
-plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers add their
-own via `Server.RegisterPlugin`.
+OpenLore's write/read paths and command surface are extensible via **plugins** —
+Go values registered with the server that are capability-detected at
+registration. A plugin implements one or more provider interfaces:
+
+| Interface | Contributes |
+|---|---|
+| `WriteMiddlewareProvider` | admission (pre-commit) middleware |
+| `ReadMiddlewareProvider` | before-read middleware |
+| `PostCommitProvider` | post-commit middleware |
+| `GrantTypeProvider` | named grant types (e.g. `publish`) |
+| `CommandProvider` | `lore` subcommands (`LoreCommands() []cmds.LoreSub`) |
+| `MetaExtenderProvider` | fields added to `lore meta` records |
+
+Built-in plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers
+add their own via `Server.RegisterPlugin`. A plugin can extend the introspection
+surface without the `lore` dispatcher knowing about it: `CommandProvider` adds
+whole subcommands, and `MetaExtenderProvider` enriches an existing command's
+output (the okf plugin uses it to annotate `lore meta` — see below).
 
 ### OKF Validator
 
@@ -429,6 +441,42 @@ import "github.com/aakarim/go-openlore/pkg/okf"
 if err := okf.Validate(path, content); err != nil {
     // not OKF-conformant
 }
+```
+
+### `lore meta` — frontmatter reader
+
+`lore meta` is a read-side, cwd-scoped introspection command on the `lore`
+dispatcher. It walks documents from the current directory (or an optional path
+argument, like `find [path]`) and emits **each document's YAML frontmatter as
+NDJSON** — one JSON object per line, `path` relative to where you are. It is a
+generic *reader*, not a validator: it emits any `*.md` that opens with a
+parseable frontmatter block (skipping those that don't) and passes through the
+full frontmatter map, so `jq` can reach any producer-defined field. Bodies stay
+out — that's the token win; use `cat`/`grep` to drill in.
+
+```bash
+cd backend
+lore meta                                                    # frontmatter for backend/**
+lore meta | jq -r .type | sort -u                            # what document types exist?
+lore meta | jq -r 'select(.type=="Metric").path' | xargs cat # drill into metrics
+```
+
+Read-scoping comes for free: the walk goes through the session filesystem, so
+`lore meta` only ever sees what the identity can already read.
+
+**OKF annotation.** When the okf plugin is active, it enriches `lore meta`
+records (via `MetaExtenderProvider`) with an `okf` field — but only for
+documents where OKF actually applies (the owning docset has `okf` and the path
+matches its patterns), so read-side discovery agrees exactly with write-side
+enforcement:
+
+```json
+{"path":"orders.md","type":"Table","okf":{"valid":true}}
+{"path":"draft.md","title":"No type","okf":{"valid":false,"error":"frontmatter is missing the required non-empty 'type' field"}}
+```
+
+```bash
+lore meta | jq -r 'select(.okf.valid == false) | .path'   # find non-conformant docs
 ```
 
 ## CLI Commands
