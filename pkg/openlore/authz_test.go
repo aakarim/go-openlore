@@ -109,6 +109,24 @@ func TestValidateGrants(t *testing.T) {
 	}
 }
 
+// TestValidateGrants_RejectsDuplicateDisplayRoots pins that two docsets sharing
+// the same display root are rejected at startup (ambiguous access boundary).
+func TestValidateGrants_RejectsDuplicateDisplayRoots(t *testing.T) {
+	s := &Server{
+		authEnforced: true,
+		grants:       newGrantRegistry(),
+		auth: &config.AuthConfig{
+			Docsets: map[string]config.DocsetSpec{
+				"a": {Paths: []config.PathMapping{{Source: "/x", Display: "/x"}}},
+				"b": {Paths: []config.PathMapping{{Source: "/other", Display: "/x"}}},
+			},
+		},
+	}
+	if err := s.validateGrants(); err == nil {
+		t.Fatal("expected validateGrants to reject two docsets sharing display root /x")
+	}
+}
+
 // TestSessionPublishTargets_ResolvesInboxPath pins that a publish target
 // carries the docset's resolved inbox path (not just its name), so `publish`
 // routes into /docset/inbox/... where the publish grant actually permits writes.
@@ -131,6 +149,69 @@ func TestSessionPublishTargets_ResolvesInboxPath(t *testing.T) {
 	}
 }
 
+// TestGrantForPath_NestedDocsetOverridesAncestor pins that a grant on an
+// ancestor docset (the root "/") does not reach into a nested docset the
+// identity lacks a grant on: /alfie is carved out of a root "openlore" grant.
+func TestGrantForPath_NestedDocsetOverridesAncestor(t *testing.T) {
+	s := grantTestServer()
+	// Add a root docset "/" alongside the existing /alfie and /miles docsets.
+	s.auth.Docsets["openlore"] = config.DocsetSpec{Paths: []config.PathMapping{{Source: "/", Display: "/"}}}
+
+	// Identity holds rw on the root docset only — no grant on /alfie.
+	id := Identity{IdentityName: "anon", Grants: map[string]string{"openlore": "rw"}, Scopes: []string{ScopeFull}}
+
+	// A root-level file is governed by the root docset → writable.
+	if !s.identityCanWrite(id, vfs.ChangeActionWrite, "/readme.md") {
+		t.Fatal("root grant should write a root-level file")
+	}
+	// /alfie is a more-specific docset that carves itself out → denied despite
+	// the root rw grant.
+	if s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/x.md") {
+		t.Fatal("nested docset must override ancestor grant: /alfie write should be denied")
+	}
+}
+
+// TestScopedReadFS_NestedDocsetCarveOut pins that an identity with read access to
+// the root "/" cannot read or list a nested docset it lacks a grant on.
+func TestScopedReadFS_NestedDocsetCarveOut(t *testing.T) {
+	merge := NewMergeFS()
+	merge.SetRoot(NewFSAdapter(fstest.MapFS{
+		"readme.md":       {Data: []byte("root")},
+		"alfie/secret.md": {Data: []byte("alfie")},
+		"miles/secret.md": {Data: []byte("miles")},
+	}))
+	// Readable: the root "/" only. Boundaries: root + the two nested docsets.
+	fs := newScopedReadFS(merge, []string{"/"}, []string{"/", "/alfie", "/miles"})
+
+	// Root-level file is readable.
+	if _, err := fs.ReadFile("/readme.md"); err != nil {
+		t.Fatalf("root-level file should be readable: %v", err)
+	}
+	// Nested docsets are carved out even though "/" is readable.
+	if _, err := fs.ReadFile("/alfie/secret.md"); err == nil {
+		t.Fatal("nested docset /alfie must be carved out of the root grant")
+	}
+	if _, err := fs.ReadFile("/miles/secret.md"); err == nil {
+		t.Fatal("nested docset /miles must be carved out of the root grant")
+	}
+
+	// Listing "/" shows the root file but hides the carved-out nested docsets.
+	entries, err := fs.ReadDir("/")
+	if err != nil {
+		t.Fatalf("ReadDir(/): %v", err)
+	}
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.FileName] = true
+	}
+	if !names["readme.md"] {
+		t.Fatalf("root listing should show root-level files: %+v", entries)
+	}
+	if names["alfie"] || names["miles"] {
+		t.Fatalf("root listing must hide carved-out nested docsets: %+v", entries)
+	}
+}
+
 func TestScopedReadFS_HidesSiblingDocsets(t *testing.T) {
 	merge := NewMergeFS()
 	merge.SetRoot(NewFSAdapter(fstest.MapFS{
@@ -138,7 +219,7 @@ func TestScopedReadFS_HidesSiblingDocsets(t *testing.T) {
 		"miles/secret.md": {Data: []byte("miles")},
 	}))
 	// Session may read only /alfie.
-	fs := newScopedReadFS(merge, []string{"/alfie"})
+	fs := newScopedReadFS(merge, []string{"/alfie"}, []string{"/alfie", "/miles"})
 
 	if _, err := fs.ReadFile("/alfie/secret.md"); err != nil {
 		t.Fatalf("should read granted docset: %v", err)
