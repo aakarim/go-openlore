@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,14 +46,17 @@ type Server struct {
 	// enforced (docsets filtered, anonymous is read-only).
 	auth         *config.AuthConfig
 	authEnforced bool
-	fs           vfs.FileSystem
-	merge        *MergeFS
-	metrics      *metrics.Metrics
-	srv          *ssh.Server
-	httpSrv      *httpserver.Server
-	passkeys     *passkeys.Passkeys
-	logger       *slog.Logger
-	motd         string
+	// grants is the registry of grant types (ro/rw + plugin-contributed like
+	// publish). A grant name in lore.json with no registered type fails startup.
+	grants   *grantRegistry
+	fs       vfs.FileSystem
+	merge    *MergeFS
+	metrics  *metrics.Metrics
+	srv      *ssh.Server
+	httpSrv  *httpserver.Server
+	passkeys *passkeys.Passkeys
+	logger   *slog.Logger
+	motd     string
 
 	onConnect    OnConnectFunc
 	onDisconnect OnDisconnectFunc
@@ -134,6 +138,7 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 		// Default to an empty (unenforced) policy; a loaded auth file replaces
 		// it and sets authEnforced below.
 		auth:    &config.AuthConfig{},
+		grants:  newGrantRegistry(),
 		merge:   NewMergeFS(),
 		metrics: &metrics.Metrics{},
 		logger:  logger,
@@ -173,15 +178,14 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 		}
 	} else {
 		// No auth file: run in trusted/unenforced mode as a single `public`
-		// docset rooted at "/", with any folder mounts folded in. Every
-		// consumer (resolveLorePathAccess, sessionDocsets) then reuses the
-		// normal docset machinery instead of special-casing unenforced mode.
+		// docset rooted at "/", with any folder mounts folded in. The anonymous
+		// identity holds an `rw` grant on it (see anonymousIdentity), so every
+		// consumer reuses the normal docset machinery.
 		paths := []config.PathMapping{{Source: "/", Display: "/"}}
 		for _, f := range cfg.Folders {
 			paths = append(paths, config.PathMapping{Source: "/" + f.Name, Display: "/" + f.Name})
 		}
 		s.auth.Docsets = map[string]config.DocsetSpec{"public": {Paths: paths}}
-		s.auth.Lore = map[string][]string{"default": {"public"}}
 	}
 
 	// Collect docset root display paths so DirFS.Mkdir can enforce the
@@ -370,7 +374,7 @@ func generateSessionID() string {
 }
 
 func (s *Server) resolveIdentity(sess ssh.Session) Identity {
-	id := Identity{
+	conn := Identity{
 		RemoteAddr:  sess.RemoteAddr().String(),
 		User:        sess.User(),
 		PublicKey:   sess.PublicKey(),
@@ -378,97 +382,59 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 		ConnectedAt: time.Now(),
 	}
 
-	// Resolve path access from auth config
-	if s.authEnforced && id.PublicKey != nil {
-		// Extract the underlying public key for matching.
-		// If the client presented a certificate, sess.PublicKey() returns
-		// the certificate itself — we need the inner key to match against
-		// raw public keys stored in lore.json identities.
-		matchKey := id.PublicKey
+	if !s.authEnforced {
+		// Auth not enforced: full access to the synthetic `public` docset.
+		return withConn(conn, s.anonymousIdentity())
+	}
+
+	if conn.PublicKey != nil {
+		// Extract the underlying public key for matching. If the client
+		// presented a certificate, sess.PublicKey() returns the certificate
+		// itself — we need the inner key to match against raw public keys stored
+		// in lore.json identities.
+		matchKey := conn.PublicKey
 		var cert *gossh.Certificate
-		if c, ok := id.PublicKey.(*gossh.Certificate); ok {
+		if c, ok := conn.PublicKey.(*gossh.Certificate); ok {
 			cert = c
 			matchKey = c.Key
 		}
+		// MarshalAuthorizedKey appends a trailing newline; stored keys are
+		// TrimSpace'd (e.g. by `identity add`). Compare trimmed so the newline
+		// mismatch doesn't silently drop every pubkey match.
+		keyStr := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(matchKey)))
 
-		keyStr := string(gossh.MarshalAuthorizedKey(matchKey))
-		matched := false
-
-		// First: try matching by public key.
+		// First: match by public key. An authenticated key holds the identity's
+		// full authority (shared with token resolution).
 		for _, ident := range s.auth.Identities {
-			if ident.PublicKey == keyStr {
-				// Shared with token resolution: an authenticated key holds this
-				// identity's full authority.
-				src := s.identityFromAuth(ident)
-				id.IdentityName = src.IdentityName
-				id.LoreName = src.LoreName
-				id.PathAccess = src.PathAccess
-				id.PublishDocsets = src.PublishDocsets
-				id.Capabilities = src.Capabilities
-				id.HomeDir = src.HomeDir
-				id.HomeDocset = src.HomeDocset
-				id.Scopes = src.Scopes
-				matched = true
-				break
+			if ident.PublicKey != "" && strings.TrimSpace(ident.PublicKey) == keyStr {
+				return withConn(conn, s.identityFromAuth(ident))
 			}
 		}
 
-		// Second: if the client used a certificate and no key matched,
-		// map certificate principals to lore names. This lets you
-		// sign certs with `-n frontend` and have them automatically get
-		// the "frontend" lore without registering individual keys.
-		if !matched && cert != nil {
+		// Second: a certificate's principals name identities directly. This lets
+		// you sign certs with `-n alfie` and have them get alfie's grants without
+		// registering individual keys.
+		if cert != nil {
 			for _, principal := range cert.ValidPrincipals {
-				if _, ok := s.auth.Lore[principal]; ok {
-					id.LoreName = principal
-					id.PathAccess = s.resolveLorePathAccess(principal)
-					// A valid cert holds this lore's full authority.
-					id.Scopes = []string{ScopeFull}
-					matched = true
-					break
+				if src, ok := s.identityForName(principal); ok {
+					return withConn(conn, src)
 				}
 			}
 		}
-
-		// Unrecognized key/cert: fall back to "default" lore
-		if !matched {
-			if _, ok := s.auth.Lore["default"]; ok {
-				id.LoreName = "default"
-				id.PathAccess = s.resolveLorePathAccess("default")
-			}
-		}
-	} else if s.authEnforced {
-		// Keyless connection with auth config: use "default" lore
-		if _, ok := s.auth.Lore["default"]; ok {
-			id.LoreName = "default"
-			id.PathAccess = s.resolveLorePathAccess("default")
-		}
-	} else {
-		// Auth not enforced: full access to the synthetic `public` docset.
-		id.LoreName = "default"
-		id.PathAccess = s.resolveLorePathAccess("default")
-		id.Scopes = []string{ScopeFull}
 	}
 
-	return id
+	// Unrecognized key / keyless: the anonymous default identity.
+	return withConn(conn, s.anonymousIdentity())
 }
 
-// resolveLorePathAccess resolves a lore name to path mappings by looking up
-// its docset list and collecting all paths from each referenced docset.
-func (s *Server) resolveLorePathAccess(loreName string) []config.PathMapping {
-	docsetNames, ok := s.auth.Lore[loreName]
-	if !ok {
-		return nil
-	}
-	var mappings []config.PathMapping
-	for _, dsName := range docsetNames {
-		if ds, ok := s.auth.Docsets[dsName]; ok {
-			for _, pm := range ds.Paths {
-				mappings = append(mappings, pm)
-			}
-		}
-	}
-	return mappings
+// withConn copies the per-connection fields (remote addr, user, public key)
+// from a freshly built connection identity onto a resolved identity, so the
+// resolved authority keeps its live connection context.
+func withConn(conn, resolved Identity) Identity {
+	resolved.RemoteAddr = conn.RemoteAddr
+	resolved.User = conn.User
+	resolved.PublicKey = conn.PublicKey
+	return resolved
 }
 
 // resolveHomeDir returns the display path of the named home docset, used as
@@ -491,38 +457,20 @@ func (s *Server) resolveHomeDir(homeDocset string) string {
 	return vfs.CleanPath(display)
 }
 
-// writableDocsetRoots resolves the docset roots an identity may write to
-// (Part B). It uses the identity's explicit publish list, falling back to every
-// docset in its lore when no explicit publish scope is set (the admin /
-// no-publish case). Docsets flagged readonly are excluded — a per-docset lock
-// can only further restrict. Returns nil for an unrecognized identity, so
-// anonymous sessions are read-only.
-func (s *Server) writableDocsetRoots(id Identity) []string {
-	if id.IdentityName == "" {
-		return nil
-	}
-	names := id.PublishDocsets
-	if len(names) == 0 {
-		names = s.auth.Lore[id.LoreName]
-	}
-	var roots []string
-	for _, name := range names {
-		ds, ok := s.auth.Docsets[name]
-		if !ok {
+// hasWritableGrant reports whether the identity holds any grant that ever
+// permits writes (rw, publish, …). It drives coarse shell action gating: a
+// read-only identity (only `ro` grants) is offered no write verbs. Per-op
+// authorization still runs through identityCanWrite.
+func (s *Server) hasWritableGrant(id Identity) bool {
+	for name, grantName := range id.Grants {
+		if _, ok := s.auth.Docsets[name]; !ok {
 			continue
 		}
-		if ds.Readonly != nil && *ds.Readonly {
-			continue // per-docset lock excludes it from the writable scope
-		}
-		for _, pm := range ds.Paths {
-			display := pm.Display
-			if display == "" {
-				display = pm.Source
-			}
-			roots = append(roots, display)
+		if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
+			return true
 		}
 	}
-	return roots
+	return false
 }
 
 // writeConflictPolicy resolves the policy governing whole-file overwrites to
@@ -565,7 +513,13 @@ func pathWithinRoot(root, p string) bool {
 }
 
 func (s *Server) sftpSubsystem(sess ssh.Session) {
-	handler := NewSFTPHandler(s.fs)
+	// SFTP must enforce the same read scoping and write authorization as the
+	// interactive shell. Resolve the session identity and build the identical
+	// layered session FS (scoped reads + per-op write authz) rather than the raw
+	// merge FS, so an accepted SSH user cannot read, list, stat, or write
+	// outside their grants over SFTP.
+	id := s.resolveIdentity(sess)
+	handler := NewSFTPHandler(s.buildSessionFS(id))
 	server := sftp.NewRequestServer(sess, sftp.Handlers{
 		FileGet:  handler,
 		FilePut:  handler,
@@ -683,6 +637,11 @@ func (s *Server) registerPlugin(p any) {
 	if pc, ok := p.(PostCommitProvider); ok {
 		s.postCommitMW = append(s.postCommitMW, pc.PostCommitMiddleware()...)
 	}
+	if gp, ok := p.(GrantTypeProvider); ok {
+		for _, g := range gp.GrantTypes() {
+			s.grants.register(g)
+		}
+	}
 }
 
 // writeChain composes the admission (pre-commit) middleware around a terminal
@@ -726,25 +685,26 @@ func hasCapability(have []string, want string) bool {
 }
 
 // buildSessionShell constructs a fully-configured shell scoped to the given
-// identity: a per-identity filesystem (lore FilteredView, write isolation,
+// identity: a per-identity filesystem (read scoping, write authorization,
 // read-tracking CAS), capability-gated allowed actions, and
 // OPENLORE_* environment variables. This is the single source of truth for
 // per-identity scoping, shared by the SSH shell handler and the MCP/HTTP tool
 // handlers so all transports enforce the same access rules.
-func (s *Server) buildSessionShell(id Identity) *shell.Shell {
-	// Build per-session filesystem filtered by lore (the identity's docsets).
-	// Only when auth is enforced: in unenforced/trusted mode the session sees
-	// the whole merge FS (all mounts), so we must not run FilteredView (which
-	// would drop folder mounts not named after the synthetic `public` docset).
+// buildSessionFS constructs the per-session filesystem for an identity: read
+// scoping to the identity's readable roots, the read/write middleware chains,
+// per-op write authorization by grant, and session CAS tracking. It is the
+// single source of the layered VFS shared by both the interactive shell and the
+// SFTP subsystem so both enforce identical read scoping and write authorization.
+func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
+	// Build per-session filesystem scoped to the identity's readable roots.
+	// Docsets are display-path subtrees of a shared backing filesystem, so read
+	// scoping is by path (not mount name): a session only sees the docsets it
+	// holds a grant on, plus the ancestor directories leading to them and the
+	// always-visible system mounts. Only when auth is enforced; in
+	// unenforced/trusted mode the session sees the whole merge FS (all mounts).
 	sessionFS := vfs.FileSystem(s.merge)
-	if s.authEnforced && id.LoreName != "" {
-		if docsetNames, ok := s.auth.Lore[id.LoreName]; ok {
-			allowed := make(map[string]bool)
-			for _, ds := range docsetNames {
-				allowed[ds] = true
-			}
-			sessionFS = s.merge.FilteredView(allowed)
-		}
+	if s.authEnforced {
+		sessionFS = newScopedReadFS(sessionFS, s.readableRoots(id))
 	}
 	// Read (before-read) gate: run the read middleware chain in front of every
 	// Stat/ReadDir/ReadFile so a plugin can (e.g.) refresh the substrate or
@@ -761,23 +721,28 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	if s.writeLog != nil {
 		sessionFS = newMiddlewareFS(sessionFS, Actor{ID: id.User}, s.writeChain())
 	}
-	// canWrite is the single authority gate shared by the FS layer and the
+	// canWrite is the coarse authority gate shared by the FS layer and the
 	// action layer: an identity may write only when auth is enforced, it is a
-	// named identity (not anonymous), and its token scope grants write. A WIF
-	// token narrowed to `read` (or any non-`full` scope) is read-only here even
-	// if the underlying identity is write-capable — narrowing wins, fail-closed.
-	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes)
-	// Part B per-identity write isolation: confine this session's writes to
-	// the docset roots it may publish to, so two agents sharing a lore can't
-	// write each other's docsets. Anonymous/unrecognized/read-scoped identities
-	// get no writable roots (fully read-only at the FS layer). No-op when auth
-	// is not enforced.
+	// named identity (not anonymous), its token scope grants write, and it holds
+	// at least one write-capable grant. A WIF token narrowed to `read` (or any
+	// non-`full` scope) is read-only here even if the underlying identity is
+	// write-capable — narrowing wins, fail-closed.
+	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes) && s.hasWritableGrant(id)
+	// Per-op write authorization: every mutation is checked against the
+	// identity's grants (grant ∩ token scope ∩ readonly locks). This confines a
+	// session to exactly what its grants permit — an `rw` grant writes anywhere
+	// in its docset, a `publish` grant only creates/edits within the inbox and
+	// never deletes, and two identities sharing a docset are authorized
+	// independently per write. Anonymous/read-only identities get a nil
+	// authorizer (fully read-only). No-op when auth is not enforced.
 	if s.authEnforced {
-		roots := s.writableDocsetRoots(id)
-		if !canWrite {
-			roots = nil
+		var authz writeAuthorizer
+		if canWrite {
+			authz = func(action vfs.ChangeAction, p string) bool {
+				return s.identityCanWrite(id, action, p)
+			}
 		}
-		sessionFS = newScopedWriteFS(sessionFS, roots)
+		sessionFS = newScopedWriteFS(sessionFS, authz)
 	}
 	if s.sessionFSFn != nil {
 		sessionFS = s.sessionFSFn(id, sessionFS)
@@ -792,6 +757,18 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 			sessionFS = newReadTrackingFS(w)
 		}
 	}
+	return sessionFS
+}
+
+func (s *Server) buildSessionShell(id Identity) *shell.Shell {
+	sessionFS := s.buildSessionFS(id)
+	// canWrite is the coarse authority gate shared by the FS layer and the
+	// action layer: an identity may write only when auth is enforced, it is a
+	// named identity (not anonymous), its token scope grants write, and it holds
+	// at least one write-capable grant. A WIF token narrowed to `read` (or any
+	// non-`full` scope) is read-only here even if the underlying identity is
+	// write-capable — narrowing wins, fail-closed.
+	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes) && s.hasWritableGrant(id)
 
 	sh := shell.NewShell(sessionFS)
 	if s.config.DefaultCwd != "" {
@@ -840,79 +817,73 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 		sh.SetEnv("OPENLORE_USER", id.User)
 		sh.SetEnv("OPENLORE_AGENT_ID", id.User)
 	}
-	if id.LoreName != "" {
-		sh.SetEnv("OPENLORE_LORE", id.LoreName)
-	}
 
 	return sh
 }
 
 // sessionDocsets resolves the docsets this session can access, with their
-// display paths, direct writability, and attributes — the per-session view
-// surfaced by `lore docsets`. Docsets are returned in the order they appear in
-// the identity's lore spec.
+// display paths, grant, and attributes — the per-session view surfaced by
+// `lore docsets`.
 func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
-	if id.LoreName == "" {
-		return nil
-	}
-	docsetNames, ok := s.auth.Lore[id.LoreName]
-	if !ok {
+	if len(id.Grants) == 0 {
 		return nil
 	}
 	writable := s.writableDocsetNames(id)
 	var out []cmds.DocsetInfo
-	for _, name := range docsetNames {
+	for name, grantName := range id.Grants {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
 		}
 		var paths []string
 		for _, pm := range ds.Paths {
-			display := pm.Display
-			if display == "" {
-				display = pm.Source
-			}
-			paths = append(paths, vfs.CleanPath(display))
+			paths = append(paths, displayPath(pm))
 		}
 		out = append(out, cmds.DocsetInfo{
-			Name:       name,
-			Paths:      paths,
-			Writable:   writable[name],
-			Home:       name == id.HomeDocset,
-			HasPublish: ds.PublishDir != "",
+			Name:     name,
+			Paths:    paths,
+			Grant:    grantName,
+			Writable: writable[name],
+			Home:     name == id.HomeDocset,
+			Inbox:    inboxPath(ds) != "",
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// sessionPublishTargets resolves the publish inboxes this session may publish
-// to: docsets in the identity's publish scope (its explicit publish list, else
-// all docsets in its lore) that declare a publish_dir. Publish inboxes only
-// exist when auth is enforced.
+// sessionPublishTargets resolves the write inboxes this session may publish to:
+// docsets whose grant allows writes and that declare an inbox. Only exist when
+// auth is enforced.
 func (s *Server) sessionPublishTargets(id Identity) []cmds.PublishTarget {
-	if !s.authEnforced || id.LoreName == "" {
+	if !s.authEnforced {
 		return nil
 	}
-	names := id.PublishDocsets
-	if len(names) == 0 {
-		names = s.auth.Lore[id.LoreName]
-	}
 	var out []cmds.PublishTarget
-	for _, name := range names {
+	for name, grantName := range id.Grants {
 		ds, ok := s.auth.Docsets[name]
-		if !ok || ds.PublishDir == "" {
+		if !ok {
 			continue
 		}
-		out = append(out, cmds.PublishTarget{Name: name, MaxFileSize: ds.MaxPublishSize})
+		grant, ok := s.grants.get(grantName)
+		if !ok || !grant.AllowsWrite() {
+			continue
+		}
+		inbox := inboxPath(ds)
+		if inbox == "" {
+			continue
+		}
+		out = append(out, cmds.PublishTarget{Name: name, InboxPath: inbox, MaxFileSize: ds.MaxWriteSize})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
 // writableDocsetNames reports, by docset name, which docsets this session may
-// write to directly. It mirrors the FS-authoritative writable scope: the global
-// write lock must be open; in unenforced mode every docset is writable; when
-// enforced, the identity must be named and hold write scope, and per-docset
-// readonly excludes a docset.
+// write to directly with the normal write verbs. The global lock must be open;
+// in unenforced mode every docset is writable; when enforced, the identity must
+// be named, hold write scope, and hold a grant whose AllowsWrite is true and
+// that is not per-docset readonly.
 func (s *Server) writableDocsetNames(id Identity) map[string]bool {
 	out := map[string]bool{}
 	if s.config.Readonly {
@@ -927,11 +898,7 @@ func (s *Server) writableDocsetNames(id Identity) map[string]bool {
 	if id.IdentityName == "" || !scopeGrantsWrite(id.Scopes) {
 		return out
 	}
-	names := id.PublishDocsets
-	if len(names) == 0 {
-		names = s.auth.Lore[id.LoreName]
-	}
-	for _, name := range names {
+	for name, grantName := range id.Grants {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
@@ -939,29 +906,27 @@ func (s *Server) writableDocsetNames(id Identity) map[string]bool {
 		if ds.Readonly != nil && *ds.Readonly {
 			continue
 		}
-		out[name] = true
+		if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
+			out[name] = true
+		}
 	}
 	return out
 }
 
 // anonymousIdentity returns the identity used for callers that present no
-// credential (keyless SSH, or an unauthenticated MCP/HTTP request). It mirrors
-// the keyless branches of resolveIdentity: the "default" lore when auth is
-// enforced, or full access when it is not.
+// credential (keyless SSH, or an unauthenticated MCP/HTTP request): the auth
+// config's `default` docset→grant map when auth is enforced, or full access to
+// the synthetic `public` docset when it is not.
 func (s *Server) anonymousIdentity() Identity {
 	id := Identity{
 		SessionID:   generateSessionID(),
 		ConnectedAt: time.Now(),
 	}
 	if s.authEnforced {
-		if _, ok := s.auth.Lore["default"]; ok {
-			id.LoreName = "default"
-			id.PathAccess = s.resolveLorePathAccess("default")
-		}
+		id.Grants = s.auth.Default // nil ⇒ no access for anonymous sessions
 	} else {
 		// Auth not enforced: full access to the synthetic `public` docset.
-		id.LoreName = "default"
-		id.PathAccess = s.resolveLorePathAccess("default")
+		id.Grants = map[string]string{"public": "rw"}
 		id.Scopes = []string{ScopeFull}
 	}
 	return id
@@ -1016,6 +981,9 @@ func joinCommand(parts []string) string {
 
 // ListenAndServe starts the SSH server (blocks).
 func (s *Server) ListenAndServe() error {
+	if err := s.validateGrants(); err != nil {
+		return err
+	}
 	opts := []ssh.Option{
 		wish.WithAddress(fmt.Sprintf(":%d", s.config.Port)),
 		wish.WithHostKeyPath(s.config.HostKeyPath),
@@ -1054,17 +1022,20 @@ func (s *Server) ListenAndServe() error {
 					matchKey = c.Key
 				}
 
-				keyStr := string(gossh.MarshalAuthorizedKey(matchKey))
+				// MarshalAuthorizedKey appends a trailing newline; stored keys
+				// are TrimSpace'd. Compare trimmed so a valid key isn't denied
+				// admission before resolveIdentity ever runs.
+				keyStr := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(matchKey)))
 				for _, ident := range s.auth.Identities {
-					if ident.PublicKey == keyStr {
+					if ident.PublicKey != "" && strings.TrimSpace(ident.PublicKey) == keyStr {
 						return true
 					}
 				}
 
-				// Allow cert-authenticated users whose principal matches a lore name
+				// Allow cert-authenticated users whose principal names an identity.
 				if cert != nil {
 					for _, principal := range cert.ValidPrincipals {
-						if _, ok := s.auth.Lore[principal]; ok {
+						if _, ok := s.findAuthIdentity(principal); ok {
 							return true
 						}
 					}

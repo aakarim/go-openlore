@@ -348,15 +348,13 @@ func (s *Server) identityForName(name string) (Identity, bool) {
 // authority (ScopeFull). Callers may override Scopes from a token.
 func (s *Server) identityFromAuth(ident config.AuthIdentity) Identity {
 	return Identity{
-		IdentityName:   ident.Name,
-		LoreName:       ident.Lore,
-		PathAccess:     s.resolveLorePathAccess(ident.Lore),
-		PublishDocsets: ident.Publish,
-		Capabilities:   ident.Capabilities,
-		HomeDir:        s.resolveHomeDir(ident.Home),
-		HomeDocset:     ident.Home,
-		Scopes:         []string{ScopeFull},
-		SessionID:      generateSessionID(),
-		ConnectedAt:    time.Now(),
+		IdentityName: ident.Name,
+		Grants:       ident.Docsets,
+		Capabilities: ident.Capabilities,
+		HomeDir:      s.resolveHomeDir(ident.Home),
+		HomeDocset:   ident.Home,
+		Scopes:       []string{ScopeFull},
+		SessionID:    generateSessionID(),
+		ConnectedAt:  time.Now(),
 	}
 }

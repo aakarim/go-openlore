@@ -201,25 +201,25 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 
 | Command | Description |
 |---------|-------------|
-| `whoami` | Print your identity and lore |
+| `whoami` | Print your identity |
 | `lore` | Introspection dispatcher (run `lore` for subcommands) |
-| `lore docsets` | List the docsets you can access, their paths, and attributes |
+| `lore docsets` | List the docsets you can access, their grant, paths, and attributes |
 
 `lore docsets` prints an aligned, greppable table:
 
 ```
 $ lore docsets
-DOCSET    ACCESS  ATTRIBUTES     PATHS
-public    r       -              /docs/public,/docs/getting-started.md
-backend   rw      approval       /docs/backend,/docs/api
-home      rw      home,publish   /home/backend
+DOCSET    GRANT    ATTRIBUTES   PATHS
+public    ro       -            /docs/public,/docs/getting-started.md
+backend   rw       -            /docs/backend,/docs/api
+home      rw       home,inbox   /home/backend
 ```
 
-- `ACCESS` is `r` or `rw` — whether you can write to the docset **directly** with the
-  normal write verbs.
+- `GRANT` is the named grant you hold on the docset: `ro` (read the whole docset),
+  `rw` (read + write anywhere in it), or `publish` (read the whole docset, create/edit
+  only within its inbox, never delete).
 - `ATTRIBUTES` is a comma-joined set of tokens (`-` if none): `home` (your `$HOME`
-  docset), `publish` (the docset has a publish inbox), `approval` (some or all writes
-  are approval-gated).
+  docset), `inbox` (the docset declares an inbox folder).
 
 **Publishing**
 
@@ -227,10 +227,9 @@ home      rw      home,publish   /home/backend
 |---------|-------------|
 | `publish` | Publish content from stdin to a docset inbox (`echo "..." \| publish <docset> <path>`) |
 
-`publish` targets a docset's **publish inbox** (`publish_dir`) — a separate mechanism
-from direct writability, useful for submitting content to read-only docsets for
-curation. `lore docsets` surfaces only the *presence* of an inbox (the `publish`
-attribute); run `publish` with no args to list your inboxes.
+`publish` targets a docset's **inbox** folder — the write surface a `publish` grant
+confines create/edit to. `lore docsets` surfaces only the *presence* of an inbox (the
+`inbox` attribute); run `publish` with no args to list your inboxes.
 
 **Shell Syntax**
 
@@ -277,20 +276,27 @@ echo "# Research" | ssh -p 2222 server publish backend research/findings.md
 ssh -p 2222 server publish
 ```
 
-Enable publishing by adding `publish_dir` to a docset in your `lore.json`:
+Enable publishing by giving a docset an `inbox` folder in your `lore.json` and
+granting an identity `publish` (or `rw`) on it:
 
 ```json
 {
   "docsets": {
     "backend": {
       "paths": ["/docs/backend"],
-      "publish_dir": "./published/backend"
+      "inbox": "inbox"
     }
-  }
+  },
+  "identities": [
+    { "name": "contributor", "docsets": { "backend": "publish" } }
+  ]
 }
 ```
 
-Published files are written to the `publish_dir` on disk. If the directory is within the served tree, files appear in the VFS immediately.
+A `publish` grant lets the identity read the whole docset but only create/edit
+files within its `inbox` folder (here `/docs/backend/inbox`) — never delete. An
+`rw` grant can write anywhere in the docset. Published files appear in the VFS
+immediately.
 
 ## Writing
 
@@ -318,9 +324,10 @@ Key properties:
 - **Read-only by default.** The substrate boots read-only; writes require
   `readonly: false` (or per-identity write scope). Embedded-docs binaries can
   never be made writable.
-- **Scoped per identity.** A session can only write the docsets it's allowed to
-  `publish` to — everyone can read the shared lore, but each agent writes only
-  its own space.
+- **Scoped per identity.** Every write is authorized against the identity's
+  per-docset grant — an `rw` grant writes anywhere in its docset, a `publish`
+  grant only within the docset's inbox — so agents sharing a docset can't write
+  each other's space.
 - **Compare-and-swap by default.** Overwrites are rejected (not silently
   clobbered) if the file changed since you read it (`write_conflict_policy: hash`,
   overridable to `last_write_wins`). Append and `patch` are always CAS.
@@ -347,7 +354,7 @@ max_jobs: 8                  # bound concurrent async spawn jobs
   "docsets": {
     "ops": {
       "paths": ["/ops"],
-      "publish_dir": "./published/ops",
+      "inbox": "inbox",
       "write_conflict_policy": "hash",
       "requires_approval": [
         { "path": "/ops/policy.md", "capability": "approve@oncall" }
@@ -603,37 +610,42 @@ Create a `lore.json` to control access per public key:
   "allow_keyless": true,
   "unknown_identity": "allow",
   "default_cwd": "/docs",
-  "lore": {
-    "default": { "paths": ["/docs/public"] },
+  "docsets": {
+    "public": { "paths": ["/docs/public"] },
     "backend": {
       "paths": ["/docs/api", {"internal/specs": "/docs/specs"}]
-    },
-    "full-access": { "paths": ["/"] }
+    }
   },
+  "default": { "public": "ro" },
   "identities": [
     {
       "name": "backend-agent",
       "public_key": "ssh-ed25519 AAAA...",
-      "lore": "backend",
+      "docsets": { "public": "ro", "backend": "rw" },
       "home": "backend"
     }
   ]
 }
 ```
 
+Each identity holds a named **grant** on each docset it can access — `ro`
+(read), `rw` (read + write), or `publish` (read all, create/edit only in the
+docset's inbox, no deletes). The `default` map is the grant set for keyless /
+unrecognized callers.
+
 ### Home Directory
 
-An identity can name one of the docsets in its lore as its `home`. That
-docset's display path becomes the session's `$HOME`, enabling `~` and `~/path`
-expansion and letting `cd` with no arguments jump home. The session still
-starts in the default working directory (`default_cwd`) — `home` only sets
-`$HOME`, not where you land on connect:
+An identity can name one of its granted docsets as its `home`. That docset's
+display path becomes the session's `$HOME`, enabling `~` and `~/path` expansion
+and letting `cd` with no arguments jump home. The session still starts in the
+default working directory (`default_cwd`) — `home` only sets `$HOME`, not where
+you land on connect:
 
 ```json
 {
   "name": "backend-agent",
   "public_key": "ssh-ed25519 AAAA...",
-  "lore": "backend",
+  "docsets": { "public": "ro", "backend-home": "rw" },
   "home": "backend-home"
 }
 ```
@@ -644,8 +656,8 @@ ssh -p 2222 server "cat ~/notes.md"
 ssh -p 2222 server "cd && pwd"    # -> /home/backend
 ```
 
-The `home` docset must be one of the docsets in the identity's lore. Pair it
-with a `publish_dir` to give each agent its own writable personal space.
+The `home` docset must be one of the identity's granted docsets. Give it an
+`inbox` (with an `rw` grant) to hand each agent its own writable personal space.
 
 ### Managing Identities
 
@@ -653,15 +665,19 @@ with a `publish_dir` to give each agent its own writable personal space.
 openlore identity add \
   --name my-agent \
   --key "ssh-ed25519 AAAA..." \
-  --lore backend \
+  --docset backend \
+  --grant rw \
   --home backend \
   --auth ./lore.json
 ```
 
+The `--key` flag is optional: an identity can exist as a passkey/token-only
+login target with no SSH key.
+
 ### Unknown Identity Handling
 
 In `lore.json`:
-- `"unknown_identity": "allow"` (default) — unrecognized keys get the "default" lore spec
+- `"unknown_identity": "allow"` (default) — unrecognized keys get the `default` grant map
 - `"unknown_identity": "deny"` — reject unrecognized keys
 
 ## HTTP Front Page

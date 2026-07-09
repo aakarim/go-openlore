@@ -28,14 +28,14 @@ func NewSessionManager(key []byte, ttl time.Duration) *SessionManager {
 
 // SessionInfo holds the decoded session values.
 type SessionInfo struct {
-	Lore      string
+	Identity  string
 	ExpiresAt time.Time
 }
 
 // SetCookie creates and sets a signed session cookie on the response.
-func (sm *SessionManager) SetCookie(w http.ResponseWriter, lore string) {
+func (sm *SessionManager) SetCookie(w http.ResponseWriter, identity string) {
 	expiry := time.Now().Add(sm.ttl)
-	payload := fmt.Sprintf("%s:%d", lore, expiry.Unix())
+	payload := fmt.Sprintf("%s:%d", identity, expiry.Unix())
 	sig := sm.sign(payload)
 	value := base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(sig)
 
@@ -80,7 +80,7 @@ func (sm *SessionManager) ValidateRequest(r *http.Request) (*SessionInfo, bool) 
 		return nil, false
 	}
 
-	lore := payload[:sepIdx]
+	identity := payload[:sepIdx]
 	expiryUnix, err := strconv.ParseInt(payload[sepIdx+1:], 10, 64)
 	if err != nil {
 		return nil, false
@@ -91,7 +91,7 @@ func (sm *SessionManager) ValidateRequest(r *http.Request) (*SessionInfo, bool) 
 		return nil, false
 	}
 
-	return &SessionInfo{Lore: lore, ExpiresAt: expiry}, true
+	return &SessionInfo{Identity: identity, ExpiresAt: expiry}, true
 }
 
 // ClearCookie removes the session cookie.

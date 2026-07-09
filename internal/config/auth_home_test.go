@@ -22,9 +22,8 @@ func TestLoadAuthConfigHomeValid(t *testing.T) {
 			"public": {"paths": ["/docs/public"]},
 			"agent-home": {"paths": [{"published/agent": "/home/agent"}]}
 		},
-		"lore": {"agent": ["public", "agent-home"]},
 		"identities": [
-			{"name": "a1", "public_key": "ssh-ed25519 AAAA", "lore": "agent", "home": "agent-home"}
+			{"name": "a1", "public_key": "ssh-ed25519 AAAA", "docsets": {"public": "ro", "agent-home": "rw"}, "home": "agent-home"}
 		]
 	}`)
 
@@ -37,19 +36,46 @@ func TestLoadAuthConfigHomeValid(t *testing.T) {
 	}
 }
 
-func TestLoadAuthConfigHomeNotInLore(t *testing.T) {
+func TestLoadAuthConfigHomeNotInGrants(t *testing.T) {
 	p := writeAuth(t, `{
 		"docsets": {
 			"public": {"paths": ["/docs/public"]},
 			"other": {"paths": ["/docs/other"]}
 		},
-		"lore": {"agent": ["public"]},
 		"identities": [
-			{"name": "a1", "public_key": "ssh-ed25519 AAAA", "lore": "agent", "home": "other"}
+			{"name": "a1", "public_key": "ssh-ed25519 AAAA", "docsets": {"public": "ro"}, "home": "other"}
 		]
 	}`)
 
 	if _, err := LoadAuthConfig(p); err == nil {
-		t.Fatal("expected error for home docset not in lore, got nil")
+		t.Fatal("expected error for home docset not in grants, got nil")
+	}
+}
+
+func TestLoadAuthConfigUnknownDocset(t *testing.T) {
+	p := writeAuth(t, `{
+		"docsets": {"public": {"paths": ["/docs/public"]}},
+		"identities": [
+			{"name": "a1", "docsets": {"missing": "ro"}}
+		]
+	}`)
+
+	if _, err := LoadAuthConfig(p); err == nil {
+		t.Fatal("expected error for grant on unknown docset, got nil")
+	}
+}
+
+func TestLoadAuthConfigDefault(t *testing.T) {
+	p := writeAuth(t, `{
+		"docsets": {"public": {"paths": ["/docs/public"]}},
+		"default": {"public": "ro"}
+	}`)
+
+	auth, err := LoadAuthConfig(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if auth.Default["public"] != "ro" {
+		t.Errorf("default grant: got %q, want %q", auth.Default["public"], "ro")
 	}
 }

@@ -183,6 +183,7 @@ Because all verbs go through here, the policy resolution, CAS base capture, and
 read-only/precondition error reporting exist in exactly one place. Commands that
 write: [`write`/`tee`/redirects](../pkg/shell/cmds/write.go),
 [`patch`](../pkg/shell/cmds/patch.go), [`sed -i`](../pkg/shell/cmds/sed.go),
+[`mkdir`](../pkg/shell/cmds/mkdir.go), [`rm`](../pkg/shell/cmds/rm.go),
 [`publish`](../pkg/shell/cmds/publish.go), and
 [`spawn`](../pkg/shell/cmds/spawn.go)'s background write-back.
 
@@ -201,10 +202,10 @@ travels:
   scopedWriteFS   ── is the target inside THIS identity's docset roots?  ──no──▶ ErrReadOnly
         │ yes
         ▼
-  approvalFS      ── does the target match a requires_approval rule?     ──yes─▶ record pending request,
+  approvalFS      ── does the target match a requires_approval rule?     ──yes─▶ record changeset (write or delete),
         │ no                                                                     return PendingApprovalError
         ▼
-  DirFS substrate ── precondition check + atomic temp-write + rename(2) ──▶ post_write event
+  DirFS substrate ── precondition check + atomic temp-write/rename-aside ──▶ post_write / post_delete event
 ```
 
 - **`scopedWriteFS`** ([`scoped_write_fs.go`](../pkg/openlore/scoped_write_fs.go))
@@ -215,12 +216,15 @@ travels:
   still prevented from writing each other's private docsets. It also implements
   `vfs.WriteScopeFS.CanWrite` for fail-fast checks (used by `spawn`).
 - **`approvalFS`** ([`approval_fs.go`](../pkg/openlore/approval_fs.go)) sits
-  *inside* the scope gate, so an out-of-scope write is denied before it could
-  ever become an approval request. For a gated path it honors the caller's
-  original precondition first (a stale write fails immediately — no doomed
-  request is parked), captures the proposal-time base, records a **pending
-  request**, fires `approval_pending`, and returns `vfs.PendingApprovalError`
-  (which callers report informationally, not as a failure).
+  *inside* the scope gate, so an out-of-scope mutation is denied before it could
+  ever become a changeset. For a gated **write** it honors the caller's original
+  precondition first (a stale write fails immediately — no doomed request is
+  parked), captures the proposal-time base, and records a write changeset. For a
+  gated **delete** (`rm` / `rm -r`) it captures an exact subtree snapshot and
+  records a delete changeset (the union of every gated descendant's capability).
+  `mkdir` is never gated and applies straight through. In every gated case it
+  fires `approval_pending` and returns `vfs.PendingApprovalError` (which callers
+  report informationally, not as a failure).
 
 ---
 
@@ -232,7 +236,7 @@ Commands are classified by `Action` in
 | Action | Verbs | Granted to |
 |--------|-------|------------|
 | `read` | `ls`, `cat`, `grep`, … (default) | everyone |
-| `write` | `write`, `patch`, `tee`, `>`/`>>`, `sed -i` | recognized identities |
+| `write` | `write`, `patch`, `tee`, `>`/`>>`, `sed -i`, `mkdir`, `rm` | recognized identities |
 | `publish` | `publish` | recognized identities |
 | `approve` | `approve`, `reject` | identities holding any approval capability |
 | `spawn` | `spawn` | identities holding the explicit `spawn` capability |
@@ -246,21 +250,40 @@ unrecognized identities get the read-only set. `sed` is special-cased: only
 
 ---
 
-## 7. Human-in-the-loop approvals (`/requests`)
+## 7. Human-in-the-loop approvals: changesets (`/requests`)
 
 A docset can declare `requires_approval` rules (path glob → required
-capability). When a write hits a gated path, `approvalFS` records an
-`ApprovalRequest` in a `RequestStore` (it stores the proposer, target, base hash,
-proposed bytes, and required capability) instead of committing.
+capability). When a gated file operation hits a matching path, `approvalFS`
+records a **changeset** — an `ApprovalRequest` in a `RequestStore` — instead of
+committing. The changeset is the single approval primitive for every gated
+mutation; its `Action` discriminates the payload:
+
+- **Write changesets** (`write`, `patch`, `tee`, `>`/`>>`, `sed -i`) carry a
+  `WriteApprovalPayload`: the base hash + proposed bytes, stored alongside the
+  metadata for the diff and for CAS replay at approval time. The caller's own
+  precondition is honored first, so a stale write fails immediately rather than
+  parking a doomed request.
+- **Delete changesets** (`rm`, `rm -r`) carry a `DeleteApprovalPayload`: an
+  **exact subtree snapshot** captured at proposal time. The snapshot is both the
+  reviewable manifest and the compare-and-swap base. Delete changesets are
+  manifest-only — no bytes are copied aside — so the target files stay **live**
+  for review until the delete is approved. A recursive delete whose subtree spans
+  several gated rules requires the **union** of their capabilities, and the
+  approver must hold *all* of them.
+
+`mkdir` / `mkdir -p` are never gated: directory creation carries no content to
+review, so it applies directly (still scope- and read-only-checked).
 
 - **`/requests`** is a read-only computed FS (`NewRequestsFS`, mounted via
-  `MountSystem`). `ls /requests` lists pending requests; `cat /requests/<id>`
-  shows the request metadata and a diff of the proposed change.
+  `MountSystem`). `ls /requests` lists pending changesets; `cat /requests/<id>`
+  shows the metadata and either the proposed diff (write) or the delete manifest.
 - **`approve <id>` / `reject <id>`** ([`approve.go`](../pkg/shell/cmds/approve.go))
   are gated by `ActionApprove`. The approval backend re-checks that the approver
-  holds the rule's required capability, then commits the stored bytes through the
-  raw substrate via CAS against the captured base (so a change since the proposal
-  is detected), or discards the request on reject.
+  holds every required capability, then replays the change through the raw
+  substrate against the captured base — a write via CAS on the base hash, a
+  delete via `RemoveAll` with the exact snapshot as the expected precondition
+  (strict staleness: any drift anywhere in the subtree marks the changeset
+  `STALE` and deletes nothing). Reject discards the changeset.
 
 ---
 
@@ -268,7 +291,8 @@ proposed bytes, and required capability) instead of committing.
 
 [`pkg/openlore/eventbus`](../pkg/openlore/eventbus/bus.go) is an in-process bus.
 Event kinds: `on_startup`, `pre_read` (debounced per path), `post_write`,
-`approval_pending`, `topic_refreshed`.
+`post_delete` (after a committed `rm` / `rm -r`), `approval_pending`,
+`topic_refreshed`.
 
 [`pkg/openlore/hooks`](../pkg/openlore/hooks/hooks.go) subscribes external
 commands to these events (configured under `hooks:` in `openlore.yml`). A hook is
@@ -317,9 +341,9 @@ In `openlore.yml` (global) and per docset in `lore.json`:
 |---------|-------|---------|
 | `readonly` | global / per-docset | Global is a hard physical lock (default `true`). A per-docset `readonly: false` cannot loosen a global lock; a per-docset `readonly: true` excludes that docset from writes. |
 | `write_conflict_policy` | global / per-docset | `hash` (CAS, default) or `last_write_wins`. Per-docset overrides global. |
-| `requires_approval` | per-docset | List of `{ path, capability }` rules that gate matching writes behind `approve`. |
+| `requires_approval` | per-docset | List of `{ path, capability }` rules that gate matching writes and deletes behind `approve` (as changesets). |
 | `max_jobs` | global | Max concurrent async `spawn` jobs (default `8`). |
-| `hooks` | global | External commands subscribed to `on_startup`/`pre_read`/`post_write`/`approval_pending`. |
+| `hooks` | global | External commands subscribed to `on_startup`/`pre_read`/`post_write`/`post_delete`/`approval_pending`. |
 
 The substrate is read-only unless `readonly: false` is set globally (or
 `--readonly=false` on the CLI). To enable per-agent writes, give each identity

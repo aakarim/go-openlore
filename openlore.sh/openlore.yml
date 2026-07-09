@@ -9,6 +9,12 @@ default_cwd: /
 auth_file: ./lore.json
 data_dir: ./data
 
+# Global write lock. The substrate boots read-only by default; set false to
+# enable the experimental writable substrate so authenticated identities can
+# create/overwrite files within their writable docsets (per-identity/per-docset
+# scoping still applies on top of this).
+readonly: false
+
 # How whole-file overwrites (>, tee, sed -i, publish) defend against concurrent
 # writers. "hash" (the default) makes them compare-and-swap: a write that would
 # clobber a change made since the file was read is rejected. "last_write_wins"
@@ -69,3 +75,5 @@ folders:
     path: ./published/zeb
   - name: adil
     path: ./published/adil
+  - name: alfie
+    path: ./published/alfie

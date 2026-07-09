@@ -187,28 +187,30 @@ func main() {
 			case "add":
 				idCmd := flag.NewFlagSet("identity add", flag.ExitOnError)
 				name := idCmd.String("name", "", "identity name (required)")
-				key := idCmd.String("key", "", "SSH public key (required)")
-				loreName := idCmd.String("lore", "", "lore spec name (required)")
+				key := idCmd.String("key", "", "SSH public key (optional: an identity may be passkey/token-only)")
+				docset := idCmd.String("docset", "", "docset to grant access to (required)")
+				grant := idCmd.String("grant", "ro", "grant on the docset: ro, rw, or publish")
 				authPath := idCmd.String("auth", "./lore.json", "path to lore.json")
 				comment := idCmd.String("comment", "", "optional comment")
-				home := idCmd.String("home", "", "docset in the lore to use as the identity's home ($HOME)")
+				home := idCmd.String("home", "", "docset in the identity's grants to use as home ($HOME)")
 				idCmd.Usage = func() {
 					fmt.Fprintf(os.Stderr, "Usage: openlore identity add [flags]\n\n")
-					fmt.Fprintf(os.Stderr, "Add a public key identity to lore.json.\n\n")
+					fmt.Fprintf(os.Stderr, "Add an identity with a per-docset grant to lore.json.\n\n")
 					idCmd.PrintDefaults()
 				}
 				idCmd.Parse(os.Args[3:])
 
-				if *name == "" || *key == "" || *loreName == "" {
+				if *name == "" || *docset == "" || *grant == "" {
 					idCmd.Usage()
 					os.Exit(1)
 				}
 
-				// Validate the public key
-				_, _, _, _, err := gossh.ParseAuthorizedKey([]byte(*key))
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "error: invalid SSH public key: %v\n", err)
-					os.Exit(1)
+				// Validate the public key when one is given (it is optional).
+				if *key != "" {
+					if _, _, _, _, err := gossh.ParseAuthorizedKey([]byte(*key)); err != nil {
+						fmt.Fprintf(os.Stderr, "error: invalid SSH public key: %v\n", err)
+						os.Exit(1)
+					}
 				}
 
 				// Load or create auth config
@@ -223,55 +225,45 @@ func main() {
 					auth.Docsets = map[string]openlore.DocsetSpec{
 						"all": {Paths: []openlore.PathMapping{{Source: "/", Display: "/"}}},
 					}
-					auth.Lore = map[string][]string{
-						"default": {"all"},
-					}
 				} else {
 					fmt.Fprintf(os.Stderr, "error: reading %s: %v\n", *authPath, readErr)
 					os.Exit(1)
 				}
 
-				// Check lore name exists
-				loreDocsets, ok := auth.Lore[*loreName]
-				if !ok {
-					fmt.Fprintf(os.Stderr, "error: lore %q not found in %s\n", *loreName, *authPath)
-					fmt.Fprintf(os.Stderr, "Available lore: ")
-					for k := range auth.Lore {
+				// Check the docset exists.
+				if _, ok := auth.Docsets[*docset]; !ok {
+					fmt.Fprintf(os.Stderr, "error: docset %q not found in %s\n", *docset, *authPath)
+					fmt.Fprintf(os.Stderr, "Available docsets: ")
+					for k := range auth.Docsets {
 						fmt.Fprintf(os.Stderr, "%s ", k)
 					}
 					fmt.Fprintln(os.Stderr)
 					os.Exit(1)
 				}
 
-				// If a home docset is given, it must be one of the lore's docsets.
-				if *home != "" {
-					inLore := false
-					for _, ds := range loreDocsets {
-						if ds == *home {
-							inLore = true
-							break
-						}
-					}
-					if !inLore {
-						fmt.Fprintf(os.Stderr, "error: home docset %q is not in lore %q\n", *home, *loreName)
-						os.Exit(1)
-					}
+				// If a home docset is given, it must be the granted docset.
+				if *home != "" && *home != *docset {
+					fmt.Fprintf(os.Stderr, "error: home docset %q is not in the identity's grants\n", *home)
+					os.Exit(1)
 				}
 
-				// Check for duplicate keys
-				keyStr := strings.TrimSpace(*key) + "\n"
-				for _, ident := range auth.Identities {
-					if ident.PublicKey == keyStr || strings.TrimSpace(ident.PublicKey) == strings.TrimSpace(*key) {
-						fmt.Fprintf(os.Stderr, "error: public key already exists for identity %q\n", ident.Name)
-						os.Exit(1)
+				// Check for duplicate keys (only when a key is provided).
+				if *key != "" {
+					for _, ident := range auth.Identities {
+						if strings.TrimSpace(ident.PublicKey) == strings.TrimSpace(*key) {
+							fmt.Fprintf(os.Stderr, "error: public key already exists for identity %q\n", ident.Name)
+							os.Exit(1)
+						}
 					}
 				}
 
 				// Add identity
 				newIdent := openlore.AuthIdentity{
-					Name:      *name,
-					PublicKey: strings.TrimSpace(*key),
-					Lore:      *loreName,
+					Name:    *name,
+					Docsets: map[string]string{*docset: *grant},
+				}
+				if *key != "" {
+					newIdent.PublicKey = strings.TrimSpace(*key)
 				}
 				if *comment != "" {
 					newIdent.Comment = *comment
@@ -292,7 +284,7 @@ func main() {
 					os.Exit(1)
 				}
 
-				fmt.Printf("Added identity %q with lore spec %q to %s\n", *name, *loreName, *authPath)
+				fmt.Printf("Added identity %q with %s grant on docset %q to %s\n", *name, *grant, *docset, *authPath)
 				os.Exit(0)
 
 			default:
@@ -495,6 +487,11 @@ func main() {
 		slog.Error("failed to create server", "error", err)
 		os.Exit(1)
 	}
+
+	// The inbox plugin contributes the `publish` grant (read whole docset, no
+	// deletes, create/edit only within the docset's inbox). Registered by
+	// default so lore.json may use `"grant": "publish"`.
+	srv.RegisterPlugin(openlore.NewInboxPlugin())
 
 	cmds.VersionString = assets.Version()
 

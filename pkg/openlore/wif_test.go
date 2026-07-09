@@ -39,6 +39,7 @@ func newWIFTestServer(t *testing.T, verifier OIDCVerifier) *Server {
 	s := &Server{
 		merge:        merge,
 		authEnforced: true,
+		grants:       newGrantRegistry(),
 		oidc:         verifier,
 		auth: &config.AuthConfig{
 			AllowKeyless:    &keyless,
@@ -47,15 +48,12 @@ func newWIFTestServer(t *testing.T, verifier OIDCVerifier) *Server {
 				"public": {Paths: []config.PathMapping{{Source: "/public", Display: "/public"}}},
 				"secret": {Paths: []config.PathMapping{{Source: "/secret", Display: "/secret"}}},
 			},
-			Lore: map[string][]string{
-				"default": {"public"},
-				"eng":     {"public", "secret"},
-			},
+			Default: map[string]string{"public": "ro"},
 			Identities: []config.AuthIdentity{
-				{Name: "alice", Lore: "eng"},
+				{Name: "alice", Docsets: map[string]string{"public": "ro", "secret": "rw"}},
 				{
-					Name: "ci-indexer",
-					Lore: "eng",
+					Name:    "ci-indexer",
+					Docsets: map[string]string{"public": "ro", "secret": "rw"},
 					Match: []config.IdentityMatch{{
 						SubPrefix: "repo:my-org/my-repo:",
 						Aud:       "https://openlore.test",

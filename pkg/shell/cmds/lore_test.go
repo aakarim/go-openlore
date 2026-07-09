@@ -44,9 +44,9 @@ func TestLore_UnknownSubcommandExitsOne(t *testing.T) {
 
 func TestLoreDocsets_Table(t *testing.T) {
 	docsets := []cmds.DocsetInfo{
-		{Name: "public", Paths: []string{"/docs/public", "/docs/getting-started.md"}},
-		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Writable: true},
-		{Name: "home", Paths: []string{"/home/backend"}, Writable: true, Home: true, HasPublish: true},
+		{Name: "public", Paths: []string{"/docs/public", "/docs/getting-started.md"}, Grant: "ro"},
+		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Grant: "rw", Writable: true},
+		{Name: "home", Paths: []string{"/home/backend"}, Grant: "rw", Writable: true, Home: true, Inbox: true},
 	}
 	out, _, code := runLore(t, docsets, "lore docsets")
 	if code != 0 {
@@ -70,9 +70,9 @@ func TestLoreDocsets_Table(t *testing.T) {
 			t.Fatalf("row %q: paths should end with %q", line, paths)
 		}
 	}
-	assertRow(lines[1], "public", "r", "-", "/docs/public,/docs/getting-started.md")
+	assertRow(lines[1], "public", "ro", "-", "/docs/public,/docs/getting-started.md")
 	assertRow(lines[2], "backend", "rw", "-", "/docs/backend,/docs/api")
-	assertRow(lines[3], "home", "rw", "home,publish", "/home/backend")
+	assertRow(lines[3], "home", "rw", "home,inbox", "/home/backend")
 }
 
 func TestLoreDocsets_EmptyShowsHeaderOnly(t *testing.T) {
@@ -80,21 +80,21 @@ func TestLoreDocsets_EmptyShowsHeaderOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	if strings.TrimRight(out, "\n") != "DOCSET  ACCESS  ATTRIBUTES  PATHS" {
+	if strings.TrimRight(out, "\n") != "DOCSET  GRANT  ATTRIBUTES  PATHS" {
 		t.Fatalf("empty docsets should print header only, got:\n%q", out)
 	}
 }
 
 func TestLoreDocsets_GrepByAttribute(t *testing.T) {
 	docsets := []cmds.DocsetInfo{
-		{Name: "public", Paths: []string{"/docs"}},
-		{Name: "backend", Paths: []string{"/docs/backend"}, Writable: true, HasPublish: true},
+		{Name: "public", Paths: []string{"/docs"}, Grant: "ro"},
+		{Name: "backend", Paths: []string{"/docs/backend"}, Grant: "rw", Writable: true, Inbox: true},
 	}
-	out, _, code := runLore(t, docsets, "lore docsets | grep publish")
+	out, _, code := runLore(t, docsets, "lore docsets | grep inbox")
 	if code != 0 {
 		t.Fatalf("piped grep exit = %d, want 0", code)
 	}
 	if !strings.Contains(out, "backend") || strings.Contains(out, "public ") {
-		t.Fatalf("grep publish should return only the backend row, got:\n%s", out)
+		t.Fatalf("grep inbox should return only the backend row, got:\n%s", out)
 	}
 }

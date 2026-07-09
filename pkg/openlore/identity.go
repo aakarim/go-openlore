@@ -3,7 +3,6 @@ package openlore
 import (
 	"time"
 
-	"github.com/aakarim/go-openlore/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -39,19 +38,17 @@ func recognizedScope(s string) bool {
 
 // Identity represents a connected caller (SSH session or MCP/HTTP request).
 type Identity struct {
-	RemoteAddr     string
-	User           string
-	PublicKey      ssh.PublicKey
-	SessionID      string
-	ConnectedAt    time.Time
-	IdentityName   string               // matched identity name from auth config
-	LoreName       string               // name of the lore spec this identity uses
-	PathAccess     []config.PathMapping // resolved path mappings
-	PublishDocsets []string             // writable docsets (nil = all in lore)
-	Capabilities   []string             // extra capabilities held (e.g. "spawn")
-	HomeDir        string               // display path of the identity's home docset ($HOME); empty = none
-	HomeDocset     string               // name of the identity's home docset; empty = none
-	Scopes         []string             // token scopes narrowing authority; {ScopeFull} = full authority
+	RemoteAddr   string
+	User         string
+	PublicKey    ssh.PublicKey
+	SessionID    string
+	ConnectedAt  time.Time
+	IdentityName string            // matched identity name from auth config
+	Grants       map[string]string // docset name → grant name (ro/rw/publish); nil = no access
+	Capabilities []string          // extra capabilities held (e.g. "spawn")
+	HomeDir      string            // display path of the identity's home docset ($HOME); empty = none
+	HomeDocset   string            // name of the identity's home docset; empty = none
+	Scopes       []string          // token scopes narrowing authority; {ScopeFull} = full authority
 }
 
 // OnConnectFunc is called when a new SSH session is established.

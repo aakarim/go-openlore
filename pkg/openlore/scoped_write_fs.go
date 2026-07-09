@@ -1,91 +1,74 @@
 package openlore
 
 import (
-	"strings"
-
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// scopedWriteFS narrows a session's write surface to a fixed set of docset
-// roots (Part B per-identity isolation). Reads pass straight through to the
-// wrapped filesystem; a write (WriteFileAtomic / Mkdir) only reaches the
-// backing substrate when its target sits strictly inside one of the writable
-// roots, otherwise it is rejected with vfs.ErrReadOnly.
-//
-// This is how two agents that can both *see* the same docsets (same lore) are
-// still prevented from writing each other's docsets: each session is scoped to
-// the roots of the docsets it may publish to.
+// writeAuthorizer decides whether a session may perform a mutation action on a
+// display path. It is the per-operation authority: the server binds it to the
+// session identity's grants (Server.identityCanWrite), so two agents that can
+// both see the same docsets are still authorized independently per write, and a
+// grant like `publish` can permit create/edit only within an inbox while
+// denying deletes.
+type writeAuthorizer func(action vfs.ChangeAction, p string) bool
+
+// scopedWriteFS gates a session's writes through a writeAuthorizer. Reads pass
+// straight through to the wrapped filesystem; a mutation only reaches the
+// backing substrate when the authorizer allows the specific (action, path),
+// otherwise it fails closed with vfs.ErrReadOnly.
 type scopedWriteFS struct {
 	vfs.FileSystem                // read delegation (Stat / ReadDir / ReadFile)
 	inner          vfs.WritableFS // the writable substrate, nil if base is read-only
-	writableRoots  []string       // cleaned docset roots this session may write
+	authorize      writeAuthorizer
 }
 
-// newScopedWriteFS wraps base so writes are confined to writableRoots. If base
-// is not itself writable, every write fails closed with vfs.ErrReadOnly.
-func newScopedWriteFS(base vfs.FileSystem, writableRoots []string) *scopedWriteFS {
+// newScopedWriteFS wraps base so every mutation is authorized by authz. If base
+// is not itself writable, every write fails closed with vfs.ErrReadOnly. A nil
+// authz denies all writes.
+func newScopedWriteFS(base vfs.FileSystem, authz writeAuthorizer) *scopedWriteFS {
 	w, _ := base.(vfs.WritableFS)
-	cleaned := make([]string, 0, len(writableRoots))
-	for _, r := range writableRoots {
-		cleaned = append(cleaned, vfs.CleanPath(r))
+	if authz == nil {
+		authz = func(vfs.ChangeAction, string) bool { return false }
 	}
-	return &scopedWriteFS{FileSystem: base, inner: w, writableRoots: cleaned}
-}
-
-// inScope reports whether p sits strictly inside one of the writable roots. A
-// root of "/" means the whole tree (any non-root path) is in scope.
-func (s *scopedWriteFS) inScope(p string) bool {
-	clean := vfs.CleanPath(p)
-	for _, root := range s.writableRoots {
-		if root == "/" {
-			if clean != "/" {
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(clean, root+"/") {
-			return true
-		}
-	}
-	return false
+	return &scopedWriteFS{FileSystem: base, inner: w, authorize: authz}
 }
 
 func (s *scopedWriteFS) WriteFileAtomic(p string, data []byte, opts vfs.WriteOpts) (string, error) {
-	if s.inner == nil || !s.inScope(p) {
+	if s.inner == nil || !s.authorize(vfs.ChangeActionWrite, p) {
 		return "", vfs.ErrReadOnly
 	}
 	return s.inner.WriteFileAtomic(p, data, opts)
 }
 
-// CanWrite reports whether p is writable in this session's scope (vfs.WriteScopeFS).
-// It enables fail-fast checks (e.g. `spawn`) without performing a write.
+// CanWrite reports whether a whole-file write to p is authorized in this session
+// (vfs.WriteScopeFS). It enables fail-fast checks (e.g. `spawn`) without writing.
 func (s *scopedWriteFS) CanWrite(p string) bool {
-	return s.inner != nil && s.inScope(p)
+	return s.inner != nil && s.authorize(vfs.ChangeActionWrite, p)
 }
 
 func (s *scopedWriteFS) Mkdir(p string) error {
-	if s.inner == nil || !s.inScope(p) {
+	if s.inner == nil || !s.authorize(vfs.ChangeActionMkdir, p) {
 		return vfs.ErrReadOnly
 	}
 	return s.inner.Mkdir(p)
 }
 
 func (s *scopedWriteFS) MkdirAll(p string) error {
-	if s.inner == nil || !s.inScope(p) {
+	if s.inner == nil || !s.authorize(vfs.ChangeActionMkdirAll, p) {
 		return vfs.ErrReadOnly
 	}
 	return s.inner.MkdirAll(p)
 }
 
 func (s *scopedWriteFS) Remove(p string) error {
-	if s.inner == nil || !s.inScope(p) {
+	if s.inner == nil || !s.authorize(vfs.ChangeActionRemove, p) {
 		return vfs.ErrReadOnly
 	}
 	return s.inner.Remove(p)
 }
 
 func (s *scopedWriteFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
-	if s.inner == nil || !s.inScope(p) {
+	if s.inner == nil || !s.authorize(vfs.ChangeActionRemoveAll, p) {
 		return vfs.ErrReadOnly
 	}
 	return s.inner.RemoveAll(p, opts)

@@ -254,13 +254,3 @@ func (s *Server) IdentityExists(name string) bool {
 	_, ok := s.findAuthIdentity(name)
 	return ok
 }
-
-// LoreForIdentity returns the lore spec name granted to an identity, for the
-// browser session cookie. It backs passkeys.TokenIssuer.
-func (s *Server) LoreForIdentity(name string) (string, bool) {
-	ident, ok := s.findAuthIdentity(name)
-	if !ok {
-		return "", false
-	}
-	return ident.Lore, true
-}

@@ -122,8 +122,8 @@ func TestAuthorize_PublicChoiceMintsAnonymousToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClaims: %v", err)
 	}
-	if id.IdentityName != "" || id.LoreName != "default" {
-		t.Errorf("public token resolved to %q/%q, want anonymous/default", id.IdentityName, id.LoreName)
+	if id.IdentityName != "" || id.Grants["public"] != "ro" {
+		t.Errorf("public token resolved to %q/%v, want anonymous with default grants", id.IdentityName, id.Grants)
 	}
 }
 
@@ -338,20 +338,17 @@ func TestMatchResolvesToIdentity(t *testing.T) {
 	if id.IdentityName != "alice" {
 		t.Fatalf("IdentityName = %q, want alice (via Match alias)", id.IdentityName)
 	}
-	if id.LoreName != "eng" {
-		t.Errorf("LoreName = %q, want eng", id.LoreName)
+	if id.Grants["secret"] != "rw" {
+		t.Errorf("Grants = %v, want secret:rw", id.Grants)
 	}
 }
 
-func TestIdentityExistsAndLoreForIdentity(t *testing.T) {
+func TestIdentityExists(t *testing.T) {
 	s := newTokenTestServer(t, true, "allow")
 	if !s.IdentityExists("alice") {
 		t.Error("IdentityExists(alice) = false, want true")
 	}
 	if s.IdentityExists("nobody") {
 		t.Error("IdentityExists(nobody) = true, want false")
-	}
-	if lore, ok := s.LoreForIdentity("alice"); !ok || lore != "eng" {
-		t.Errorf("LoreForIdentity(alice) = (%q, %v), want (eng, true)", lore, ok)
 	}
 }

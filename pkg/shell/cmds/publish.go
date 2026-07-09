@@ -70,6 +70,12 @@ func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdi
 		return 1
 	}
 
+	// Route the publish into the docset's inbox: `publish /<docset>/<rest>`
+	// writes to <inbox>/<rest>, never to the docset root. The inbox is the only
+	// place the publish grant may create files, so the destination must be
+	// resolved here rather than writing the raw /<docset>/<rest> path.
+	dest := path.Join(target.InboxPath, segs[1])
+
 	maxSize := target.MaxFileSize
 	if maxSize <= 0 {
 		maxSize = defaultMaxPublishSize
@@ -86,29 +92,29 @@ func CmdPublish(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdi
 		return 1
 	}
 
-	if _, err := WriteFile(ctx, p, data, false); err != nil {
+	if _, err := WriteFile(ctx, dest, data, false); err != nil {
 		var pchg *vfs.PendingChangeError
 		if errors.As(err, &pchg) {
 			// Not a failure: a middleware parked the publish as a pending change.
-			fmt.Fprintln(w, pendingChangeLine("publish", p, pchg))
+			fmt.Fprintln(w, pendingChangeLine("publish", dest, pchg))
 			return 0
 		}
 		var pce *vfs.PreconditionError
 		if errors.As(err, &pce) {
-			fmt.Fprintf(errW, "publish: %s changed concurrently — re-read and retry\n", p)
+			fmt.Fprintf(errW, "publish: %s changed concurrently — re-read and retry\n", dest)
 			return 1
 		}
 		if errors.Is(err, vfs.ErrReadOnly) {
-			fmt.Fprintf(errW, "publish: no access to %s\n", p)
+			fmt.Fprintf(errW, "publish: no access to %s\n", dest)
 		} else {
 			fmt.Fprintf(errW, "publish: %s\n", err)
 		}
 		return 1
 	}
 
-	fmt.Fprintf(w, "Published %s (%d bytes)\n", p, len(data))
+	fmt.Fprintf(w, "Published %s (%d bytes)\n", dest, len(data))
 	if PublishBaseURL != "" {
-		fmt.Fprintf(w, "%s%s\n", PublishBaseURL, p)
+		fmt.Fprintf(w, "%s%s\n", PublishBaseURL, dest)
 	}
 	return 0
 }

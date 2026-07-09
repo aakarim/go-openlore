@@ -8,21 +8,14 @@ import (
 func CmdWhoami(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	env := ctx.AllEnv()
 	identity := env["OPENLORE_IDENTITY"]
-	lore := env["OPENLORE_LORE"]
 
-	if identity == "" && lore == "" {
+	if identity == "" {
+		// No resolved identity: report the generic shell principal.
 		fmt.Fprintln(w, "lore")
 		return 0
 	}
 
-	if identity == "" {
-		identity = "anonymous"
-	}
-	if lore == "" {
-		lore = "default"
-	}
-
-	fmt.Fprintf(w, "%s (lore: %s)\n", identity, lore)
+	fmt.Fprintln(w, identity)
 	return 0
 }
 

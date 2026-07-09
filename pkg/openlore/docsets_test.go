@@ -10,33 +10,44 @@ import (
 func boolPtr(b bool) *bool { return &b }
 
 // enforcedDocsetServer builds a writable, auth-enforced server with a mix of
-// docset shapes for exercising the per-session builders.
+// docset shapes for exercising the per-session builders. The inbox plugin's
+// `publish` grant is registered so inbox docsets can be exercised.
 func enforcedDocsetServer() *Server {
-	return &Server{
+	s := &Server{
 		merge:        NewMergeFS(),
 		authEnforced: true,
+		grants:       newGrantRegistry(),
 		config:       config.Config{Readonly: false}, // global write lock open
 		auth: &config.AuthConfig{
 			Docsets: map[string]config.DocsetSpec{
 				"public": {Paths: []config.PathMapping{{Source: "/docs/public", Display: "/docs/public"}}},
 				"backend": {
-					Paths:          []config.PathMapping{{Source: "/docs/backend", Display: "/docs/backend"}},
-					PublishDir:     "./published/backend",
-					MaxPublishSize: 5000,
+					Paths:        []config.PathMapping{{Source: "/docs/backend", Display: "/docs/backend"}},
+					Inbox:        "inbox",
+					MaxWriteSize: 5000,
 				},
 				"archive": {
 					Paths:    []config.PathMapping{{Source: "/docs/archive", Display: "/docs/archive"}},
 					Readonly: boolPtr(true),
 				},
 				"home": {
-					Paths:      []config.PathMapping{{Source: "/home/agent", Display: "/home/agent"}},
-					PublishDir: "./published/home",
+					Paths: []config.PathMapping{{Source: "/home/agent", Display: "/home/agent"}},
+					Inbox: "inbox",
 				},
 			},
-			Lore: map[string][]string{
-				"agent": {"public", "backend", "archive", "home"},
-			},
 		},
+	}
+	s.registerPlugin(NewInboxPlugin())
+	return s
+}
+
+// agentIdentity is the full-authority identity used across the docset tests.
+func agentIdentity() Identity {
+	return Identity{
+		IdentityName: "agent",
+		Grants:       map[string]string{"public": "rw", "backend": "rw", "archive": "rw", "home": "rw"},
+		HomeDocset:   "home",
+		Scopes:       []string{ScopeFull},
 	}
 }
 
@@ -51,42 +62,36 @@ func docsetByName(ds []cmds.DocsetInfo, name string) (cmds.DocsetInfo, bool) {
 
 func TestSessionDocsets_Enforced(t *testing.T) {
 	s := enforcedDocsetServer()
-	id := Identity{
-		IdentityName: "agent",
-		LoreName:     "agent",
-		HomeDocset:   "home",
-		Scopes:       []string{ScopeFull},
-	}
+	got := s.sessionDocsets(agentIdentity())
 
-	got := s.sessionDocsets(id)
-
-	// Order follows the lore spec.
-	wantOrder := []string{"public", "backend", "archive", "home"}
+	// Sorted by name.
+	wantOrder := []string{"archive", "backend", "home", "public"}
 	if len(got) != len(wantOrder) {
 		t.Fatalf("got %d docsets, want %d: %+v", len(got), len(wantOrder), got)
 	}
 	for i, name := range wantOrder {
 		if got[i].Name != name {
-			t.Fatalf("docset[%d] = %q, want %q (order should follow lore spec)", i, got[i].Name, name)
+			t.Fatalf("docset[%d] = %q, want %q (sorted by name)", i, got[i].Name, name)
 		}
 	}
 
 	public, _ := docsetByName(got, "public")
-	// public is in the lore and not per-docset readonly, so a full-scope agent
-	// can write to it directly (direct writability is independent of publish_dir).
 	if !public.Writable {
 		t.Fatalf("public should be directly writable for a full-scope agent: %+v", public)
 	}
-	if public.Home || public.HasPublish {
+	if public.Home || public.Inbox {
 		t.Fatalf("public should carry no attributes: %+v", public)
+	}
+	if public.Grant != "rw" {
+		t.Fatalf("public grant = %q, want rw", public.Grant)
 	}
 
 	backend, _ := docsetByName(got, "backend")
 	if !backend.Writable {
 		t.Fatalf("backend should be writable")
 	}
-	if !backend.HasPublish {
-		t.Fatalf("backend has publish_dir → HasPublish")
+	if !backend.Inbox {
+		t.Fatalf("backend has an inbox → Inbox")
 	}
 
 	archive, _ := docsetByName(got, "archive")
@@ -106,63 +111,61 @@ func TestSessionDocsets_Enforced(t *testing.T) {
 func TestSessionDocsets_GlobalReadonlyMakesAllRead(t *testing.T) {
 	s := enforcedDocsetServer()
 	s.config.Readonly = true // close the global lock
-	id := Identity{IdentityName: "agent", LoreName: "agent", Scopes: []string{ScopeFull}}
 
-	for _, d := range s.sessionDocsets(id) {
+	for _, d := range s.sessionDocsets(agentIdentity()) {
 		if d.Writable {
 			t.Fatalf("global lock closed: %q must not be writable", d.Name)
 		}
 	}
 }
 
-func TestSessionDocsets_AnonymousIsReadOnly(t *testing.T) {
+func TestSessionDocsets_ReadOnlyGrantIsReadOnly(t *testing.T) {
 	s := enforcedDocsetServer()
-	// Anonymous: default lore, no identity name, no write scope.
-	s.auth.Lore["default"] = []string{"public", "backend"}
-	id := Identity{LoreName: "default"}
+	// An identity with only ro grants (no identity name / not a writer).
+	id := Identity{Grants: map[string]string{"public": "ro", "backend": "ro"}}
 
 	for _, d := range s.sessionDocsets(id) {
 		if d.Writable {
-			t.Fatalf("anonymous session: %q must be read-only", d.Name)
+			t.Fatalf("ro-grant session: %q must be read-only", d.Name)
 		}
 	}
 }
 
-func TestSessionPublishTargets_OnlyDocsetsWithPublishDir(t *testing.T) {
+func TestSessionPublishTargets_OnlyWritableInboxDocsets(t *testing.T) {
 	s := enforcedDocsetServer()
-	id := Identity{IdentityName: "agent", LoreName: "agent", Scopes: []string{ScopeFull}}
-
-	targets := s.sessionPublishTargets(id)
+	targets := s.sessionPublishTargets(agentIdentity())
 	names := map[string]int64{}
 	for _, tgt := range targets {
 		names[tgt.Name] = tgt.MaxFileSize
 	}
 	if _, ok := names["public"]; ok {
-		t.Fatalf("public has no publish_dir → not a publish target")
+		t.Fatalf("public has no inbox → not a publish target")
+	}
+	if _, ok := names["archive"]; ok {
+		t.Fatalf("archive has no inbox → not a publish target")
 	}
 	if _, ok := names["backend"]; !ok {
-		t.Fatalf("backend has publish_dir → should be a publish target")
+		t.Fatalf("backend has an inbox → should be a publish target")
 	}
 	if names["backend"] != 5000 {
 		t.Fatalf("backend max size = %d, want 5000", names["backend"])
 	}
 	if _, ok := names["home"]; !ok {
-		t.Fatalf("home has publish_dir → should be a publish target")
+		t.Fatalf("home has an inbox → should be a publish target")
 	}
 }
 
-func TestSessionPublishTargets_RespectsExplicitPublishScope(t *testing.T) {
+func TestSessionPublishTargets_PublishGrant(t *testing.T) {
 	s := enforcedDocsetServer()
+	// A publish grant on backend (which has an inbox) is a publish target.
 	id := Identity{
-		IdentityName:   "agent",
-		LoreName:       "agent",
-		PublishDocsets: []string{"backend"}, // explicit publish scope
-		Scopes:         []string{ScopeFull},
+		IdentityName: "miles",
+		Grants:       map[string]string{"backend": "publish"},
+		Scopes:       []string{ScopeFull},
 	}
-
 	targets := s.sessionPublishTargets(id)
 	if len(targets) != 1 || targets[0].Name != "backend" {
-		t.Fatalf("explicit publish scope should limit targets to backend, got %+v", targets)
+		t.Fatalf("publish grant should yield backend as a target, got %+v", targets)
 	}
 }
 
@@ -170,15 +173,15 @@ func TestSessionPublishTargets_UnenforcedHasNone(t *testing.T) {
 	s := &Server{
 		merge:        NewMergeFS(),
 		authEnforced: false,
+		grants:       newGrantRegistry(),
 		config:       config.Config{Readonly: false},
 		auth: &config.AuthConfig{
 			Docsets: map[string]config.DocsetSpec{
 				"public": {Paths: []config.PathMapping{{Source: "/", Display: "/"}}},
 			},
-			Lore: map[string][]string{"default": {"public"}},
 		},
 	}
-	id := Identity{LoreName: "default", Scopes: []string{ScopeFull}}
+	id := Identity{Grants: map[string]string{"public": "rw"}, Scopes: []string{ScopeFull}}
 	if targets := s.sessionPublishTargets(id); targets != nil {
 		t.Fatalf("unenforced mode has no publish inboxes, got %+v", targets)
 	}
@@ -188,15 +191,15 @@ func TestSessionDocsets_UnenforcedPublicIsWritable(t *testing.T) {
 	s := &Server{
 		merge:        NewMergeFS(),
 		authEnforced: false,
+		grants:       newGrantRegistry(),
 		config:       config.Config{Readonly: false}, // writes unrestricted
 		auth: &config.AuthConfig{
 			Docsets: map[string]config.DocsetSpec{
 				"public": {Paths: []config.PathMapping{{Source: "/", Display: "/"}}},
 			},
-			Lore: map[string][]string{"default": {"public"}},
 		},
 	}
-	id := Identity{LoreName: "default", Scopes: []string{ScopeFull}}
+	id := Identity{Grants: map[string]string{"public": "rw"}, Scopes: []string{ScopeFull}}
 	got := s.sessionDocsets(id)
 	if len(got) != 1 || got[0].Name != "public" {
 		t.Fatalf("want single public docset, got %+v", got)

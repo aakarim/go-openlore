@@ -31,7 +31,7 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 			return
 		}
 
-		allowed := p.allowedPrefixes(session.Lore)
+		allowed := p.allowedPrefixes(session.Identity)
 
 		// Map the request path under lorePath onto a filesystem path.
 		rel := strings.TrimPrefix(r.URL.Path, lorePath)
@@ -71,18 +71,25 @@ func (p *Passkeys) LoreBrowserHandler(fsys vfs.FileSystem) http.Handler {
 	})
 }
 
-// allowedPrefixes returns the display path prefixes a lore spec may browse.
-func (p *Passkeys) allowedPrefixes(lore string) []string {
+// allowedPrefixes returns the display path prefixes an identity may browse,
+// resolved from the docsets it holds any grant on.
+func (p *Passkeys) allowedPrefixes(identity string) []string {
 	if p.auth == nil {
 		return []string{"/"}
 	}
-	docsetNames, ok := p.auth.Lore[lore]
-	if !ok {
+	var grants map[string]string
+	for _, ident := range p.auth.Identities {
+		if ident.Name == identity {
+			grants = ident.Docsets
+			break
+		}
+	}
+	if grants == nil {
 		return nil
 	}
 	var prefixes []string
-	for _, ds := range docsetNames {
-		spec, ok := p.auth.Docsets[ds]
+	for name := range grants {
+		spec, ok := p.auth.Docsets[name]
 		if !ok {
 			continue
 		}

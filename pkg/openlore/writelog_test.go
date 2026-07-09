@@ -19,14 +19,14 @@ type wlRecordingFS struct {
 	errFor  map[string]error
 }
 
-func (f *wlRecordingFS) Stat(string) (*vfs.FileInfo, error)   { return nil, errors.New("no") }
+func (f *wlRecordingFS) Stat(string) (*vfs.FileInfo, error)     { return nil, errors.New("no") }
 func (f *wlRecordingFS) ReadDir(string) ([]vfs.FileInfo, error) { return nil, errors.New("no") }
-func (f *wlRecordingFS) ReadFile(string) ([]byte, error)      { return nil, errors.New("no") }
-func (f *wlRecordingFS) SetWriteable() error                  { return nil }
-func (f *wlRecordingFS) SetReadonly() error                   { return nil }
-func (f *wlRecordingFS) Mkdir(string) error                   { return nil }
-func (f *wlRecordingFS) MkdirAll(string) error                { return nil }
-func (f *wlRecordingFS) Remove(string) error                  { return nil }
+func (f *wlRecordingFS) ReadFile(string) ([]byte, error)        { return nil, errors.New("no") }
+func (f *wlRecordingFS) SetWriteable() error                    { return nil }
+func (f *wlRecordingFS) SetReadonly() error                     { return nil }
+func (f *wlRecordingFS) Mkdir(string) error                     { return nil }
+func (f *wlRecordingFS) MkdirAll(string) error                  { return nil }
+func (f *wlRecordingFS) Remove(string) error                    { return nil }
 func (f *wlRecordingFS) RemoveAll(string, vfs.RemoveOpts) error { return nil }
 
 func (f *wlRecordingFS) WriteFileAtomic(name string, _ []byte, _ vfs.WriteOpts) (string, error) {
