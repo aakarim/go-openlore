@@ -32,14 +32,13 @@ func newScopedTestAPI(t *testing.T) http.Handler {
 	s := &Server{
 		merge:        merge,
 		authEnforced: true,
+		grants:       newGrantRegistry(),
 		auth: &config.AuthConfig{
 			Docsets: map[string]config.DocsetSpec{
 				"public": {Paths: []config.PathMapping{{Source: "/public", Display: "/public"}}},
 				"secret": {Paths: []config.PathMapping{{Source: "/secret", Display: "/secret"}}},
 			},
-			Lore: map[string][]string{
-				"default": {"public"}, // secret deliberately excluded
-			},
+			Default: map[string]string{"public": "ro"}, // secret deliberately excluded
 		},
 		config: config.Config{Readonly: true},
 	}

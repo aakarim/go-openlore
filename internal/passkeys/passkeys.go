@@ -28,9 +28,6 @@ type TokenIssuer interface {
 	// table. Registration references an identity by name (Q6/§8.3), so this
 	// validates the target at register time.
 	IdentityExists(name string) bool
-	// LoreForIdentity returns the lore spec name granted to an identity, used to
-	// set the browser session cookie for the /lore browser.
-	LoreForIdentity(name string) (lore string, ok bool)
 	// IssueAuthCode mints a single-use OAuth authorization code for sub, to be
 	// exchanged at /oauth/token. ok is false when token auth is disabled, in
 	// which case login still sets the browser cookie but issues no bearer token.
@@ -333,15 +330,9 @@ func (p *Passkeys) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	_ = p.store.UpdateSignCount(cred.ID, cred.Authenticator.SignCount)
 
 	// Set the browser session cookie for the /lore docs browser. The cookie
-	// carries the lore spec the identity is granted, resolved live from the
+	// carries the identity name; the browser resolves its grants live from the
 	// identity table.
-	lore := ""
-	if p.tokens != nil {
-		if l, ok := p.tokens.LoreForIdentity(matched.Identity); ok {
-			lore = l
-		}
-	}
-	p.sessions.SetCookie(w, lore)
+	p.sessions.SetCookie(w, matched.Identity)
 
 	// OAuth authorization-code flow: if this login was reached via /authorize
 	// (?authz=<id>), finalize it and hand the browser a redirect back to the

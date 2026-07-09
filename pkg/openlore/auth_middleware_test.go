@@ -3,6 +3,7 @@ package openlore
 import (
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -25,6 +26,7 @@ func newTokenTestServer(t *testing.T, allowKeyless bool, unknownIdentity string)
 	s := &Server{
 		merge:        merge,
 		authEnforced: true,
+		grants:       newGrantRegistry(),
 		auth: &config.AuthConfig{
 			AllowKeyless:    &keyless,
 			UnknownIdentity: unknownIdentity,
@@ -32,12 +34,9 @@ func newTokenTestServer(t *testing.T, allowKeyless bool, unknownIdentity string)
 				"public": {Paths: []config.PathMapping{{Source: "/public", Display: "/public"}}},
 				"secret": {Paths: []config.PathMapping{{Source: "/secret", Display: "/secret"}}},
 			},
-			Lore: map[string][]string{
-				"default": {"public"},
-				"eng":     {"public", "secret"},
-			},
+			Default: map[string]string{"public": "ro"},
 			Identities: []config.AuthIdentity{
-				{Name: "alice", Lore: "eng"},
+				{Name: "alice", Docsets: map[string]string{"public": "ro", "secret": "rw"}},
 			},
 		},
 		config: config.Config{
@@ -65,8 +64,22 @@ func (s *Server) identityEcho() http.Handler {
 		if name == "" {
 			name = "anonymous"
 		}
-		w.Write([]byte(name + " " + id.LoreName))
+		w.Write([]byte(name + " " + grantsString(id.Grants)))
 	})
+}
+
+// grantsString renders a grant map as a stable "docset:grant,…" string.
+func grantsString(grants map[string]string) string {
+	keys := make([]string, 0, len(grants))
+	for k := range grants {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+":"+grants[k])
+	}
+	return strings.Join(parts, ",")
 }
 
 func mint(t *testing.T, s *Server, sub, scope string) string {
@@ -88,8 +101,8 @@ func TestAuthMiddleware_KeylessNoTokenIsAnonymous(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Body.String(); got != "anonymous default" {
-		t.Fatalf("body = %q, want %q", got, "anonymous default")
+	if got := rec.Body.String(); got != "anonymous public:ro" {
+		t.Fatalf("body = %q, want %q", got, "anonymous public:ro")
 	}
 }
 
@@ -105,8 +118,8 @@ func TestAuthMiddleware_ValidTokenResolvesIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); got != "alice eng" {
-		t.Fatalf("body = %q, want %q", got, "alice eng")
+	if got := rec.Body.String(); got != "alice public:ro,secret:rw" {
+		t.Fatalf("body = %q, want %q", got, "alice public:ro,secret:rw")
 	}
 }
 
@@ -168,7 +181,7 @@ func TestAuthMiddleware_AnonymousTokenResolvesToDefault(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if got := rec.Body.String(); got != "anonymous default" {
-		t.Fatalf("public token body = %q, want %q", got, "anonymous default")
+	if got := rec.Body.String(); got != "anonymous public:ro" {
+		t.Fatalf("public token body = %q, want %q", got, "anonymous public:ro")
 	}
 }

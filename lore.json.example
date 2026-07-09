@@ -5,6 +5,8 @@
 
   "//tokens": "Bearer-token auth for the MCP + HTTP API is SERVER config: set the `tokens:` block in openlore.yml, not here. lore.json is access policy (who can see what); token issuance is infrastructure.",
 
+  "//grants": "An identity holds a named GRANT on each docset it can access. Core grants: `ro` (read the whole docset) and `rw` (read + write anywhere in the docset). The inbox plugin adds `publish` (read the whole docset, no deletes, create/edit only within the docset's `inbox` folder). A grant name with no registered handler makes the server refuse to start.",
+
   "docsets": {
     "public": {
       "paths": [
@@ -26,14 +28,14 @@
         {"internal/db-schema": "/docs/database"},
         "/docs/shared"
       ],
-      "publish_dir": "./published/backend",
-      "max_publish_size": 5000000
+      "inbox": "inbox",
+      "max_write_size": 5000000
     },
     "backend-home": {
       "paths": [
         {"published/backend-home": "/home/backend"}
       ],
-      "publish_dir": "./published/backend-home"
+      "inbox": "inbox"
     },
     "ops": {
       "paths": [
@@ -43,38 +45,60 @@
       ]
     }
   },
-  "lore": {
-    "default": ["public"],
-    "frontend": ["public", "frontend"],
-    "backend": ["public", "backend", "backend-home"],
-    "ops": ["public", "ops"],
-    "full-access": ["public", "frontend", "backend", "ops"]
+
+  "//default": "The docset→grant map applied to keyless / unrecognized callers. Omit for no anonymous access.",
+  "default": {
+    "public": "ro"
   },
+
   "identities": [
     {
       "name": "frontend-agent",
       "comment": "Claude agent for frontend team",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleFrontendKeyHere frontend-agent",
-      "lore": "frontend"
+      "docsets": {
+        "public": "ro",
+        "frontend": "rw"
+      }
     },
     {
       "name": "backend-agent",
       "comment": "GPT agent for backend services",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBackendKeyHere backend-agent",
-      "lore": "backend",
+      "docsets": {
+        "public": "ro",
+        "backend": "rw",
+        "backend-home": "rw"
+      },
       "home": "backend-home"
+    },
+    {
+      "name": "contributor",
+      "comment": "Outside collaborator: can read backend docs and drop files into its inbox, but cannot edit the rest or delete anything",
+      "docsets": {
+        "public": "ro",
+        "backend": "publish"
+      }
     },
     {
       "name": "ops-agent",
       "comment": "Infrastructure and deployment docs",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOpsKeyHere ops-agent",
-      "lore": "ops"
+      "docsets": {
+        "public": "ro",
+        "ops": "rw"
+      }
     },
     {
       "name": "read-all",
       "comment": "Full read access to all documentation",
       "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleReadAllKeyHere admin",
-      "lore": "full-access",
+      "docsets": {
+        "public": "ro",
+        "frontend": "ro",
+        "backend": "ro",
+        "ops": "ro"
+      },
       "//match": "Optional: extra token-claim predicates that resolve TO this identity. A token whose `sub` == the identity Name resolves here automatically; add `match` only to map additional subjects (aliases) or WIF assertions via `sub_prefix`/`aud`/`claims`. `scope` narrows (e.g. \"read\") and `ttl` caps matched WIF tokens. Exact `sub` beats pattern matches.",
       "match": [
         { "sub": "alice" },

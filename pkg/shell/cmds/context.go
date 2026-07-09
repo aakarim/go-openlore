@@ -40,26 +40,32 @@ type CmdContext interface {
 
 // DocsetInfo describes one docset a session can access. It is the per-session
 // view surfaced by `lore docsets` — the host resolves it from the identity's
-// lore at session creation.
+// grants at session creation.
 type DocsetInfo struct {
 	// Name is the docset's logical name (its key in the auth config).
 	Name string
 	// Paths are the docset's display (virtual) paths in the filesystem.
 	Paths []string
+	// Grant is the grant name the session holds on this docset (ro/rw/publish).
+	Grant string
 	// Writable reports whether this session may write to the docset directly
-	// with the normal write verbs (r vs rw). This is the FS-authoritative
-	// answer, independent of any publish inbox.
+	// with the normal write verbs. This is the FS-authoritative answer.
 	Writable bool
 	// Home reports whether this docset is the session's home docset ($HOME).
 	Home bool
-	// HasPublish reports whether the docset has a publish inbox (publish_dir).
-	// It says nothing about the inbox path or size — that lives in PublishTarget.
-	HasPublish bool
+	// Inbox reports whether the docset declares an inbox folder (used by the
+	// publish grant). It says nothing about the inbox path or size — that lives
+	// in PublishTarget.
+	Inbox bool
 }
 
-// PublishTarget is a writable publish inbox: its logical docset name (the first
-// path segment used in `publish /<name>/<file>`) and the per-docset size cap.
+// PublishTarget is a writable inbox: its logical docset name (the first path
+// segment used in `publish /<name>/<file>`), the resolved virtual filesystem
+// path of the docset's inbox that a publish is routed into, and the per-docset
+// size cap. A `publish /<name>/<rest>` writes to InboxPath/<rest>, not to the
+// docset root — the inbox is the only place the publish grant may create files.
 type PublishTarget struct {
 	Name        string
+	InboxPath   string
 	MaxFileSize int64
 }

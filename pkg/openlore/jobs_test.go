@@ -42,7 +42,7 @@ func spawnFixture(t *testing.T, runner fakeRunner) (*shell.Shell, *JobManager, *
 	cmds.Jobs = mgr
 	t.Cleanup(func() { cmds.Jobs = saved })
 
-	scoped := newScopedWriteFS(base, []string{"/ops"})
+	scoped := newScopedWriteFS(base, rootsAuthz("/ops"))
 	sh := shell.NewShell(scoped)
 	sh.SetAllowedActions([]cmds.Action{cmds.ActionWrite, cmds.ActionSpawn})
 	sh.SetEnv("OPENLORE_IDENTITY", "jared")

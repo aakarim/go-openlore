@@ -605,8 +605,8 @@ type MergeFS struct {
 	root   vfs.FileSystem
 	mounts map[string]vfs.FileSystem
 	// system marks mount names that are control-plane (e.g. "requests") rather
-	// than lore docsets. System mounts are always preserved across
-	// FilteredView, so every session can see them regardless of its lore.
+	// than lore docsets. System mounts are always readable regardless of an
+	// identity's grants (see Server.readableRoots / SystemMountPaths).
 	system map[string]bool
 }
 
@@ -635,24 +635,15 @@ func (m *MergeFS) MountSystem(name string, fs vfs.FileSystem) {
 	m.system[name] = true
 }
 
-// FilteredView returns a new MergeFS that only includes the specified mount
-// names plus all system mounts. The root filesystem is always included. If
-// allowedMounts is nil, returns the original.
-func (m *MergeFS) FilteredView(allowedMounts map[string]bool) *MergeFS {
-	if allowedMounts == nil {
-		return m
+// SystemMountPaths returns the display paths ("/name") of every control-plane
+// (system) mount. These are always readable regardless of an identity's grants,
+// so the read-scoping layer includes them.
+func (m *MergeFS) SystemMountPaths() []string {
+	var out []string
+	for name := range m.system {
+		out = append(out, "/"+name)
 	}
-	filtered := &MergeFS{
-		root:   m.root,
-		mounts: make(map[string]vfs.FileSystem),
-		system: m.system,
-	}
-	for name, fs := range m.mounts {
-		if allowedMounts[name] || m.system[name] {
-			filtered.mounts[name] = fs
-		}
-	}
-	return filtered
+	return out
 }
 
 // SetWriteable fans out to every writable-capable backend (root + mounts).

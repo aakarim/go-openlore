@@ -149,8 +149,10 @@ type AuthConfig struct {
 	UnknownIdentity string                `json:"unknown_identity,omitempty"`
 	DefaultCwd      string                `json:"default_cwd,omitempty"`
 	Docsets         map[string]DocsetSpec `json:"docsets"`
-	Lore            map[string][]string   `json:"lore"`
-	Identities      []AuthIdentity        `json:"identities"`
+	// Default is the docset→grant map applied to keyless / unrecognized callers
+	// (the former `lore.default`). Empty = no access for anonymous sessions.
+	Default    map[string]string `json:"default,omitempty"`
+	Identities []AuthIdentity    `json:"identities"`
 }
 
 // AuthTokensConfig controls the bearer-token issuer for the MCP + HTTP API.
@@ -178,9 +180,13 @@ type JWKSSpec struct {
 
 // DocsetSpec defines a named set of path mappings.
 type DocsetSpec struct {
-	Paths          []PathMapping `json:"paths"`
-	PublishDir     string        `json:"publish_dir,omitempty"`
-	MaxPublishSize int64         `json:"max_publish_size,omitempty"` // bytes; 0 = use default (2.5MB)
+	Paths []PathMapping `json:"paths"`
+	// Inbox names a subfolder (VFS path, relative to a docset root or absolute)
+	// that the `publish` grant confines create/edit to. Empty = the docset has
+	// no inbox, so a `publish` grant on it can write nothing.
+	Inbox string `json:"inbox,omitempty"`
+	// MaxWriteSize caps a single write's bytes for this docset; 0 = default (2.5MB).
+	MaxWriteSize int64 `json:"max_write_size,omitempty"`
 
 	// Readonly is the per-docset policy check (enforced in the write pipeline,
 	// not on the substrate). nil means "inherit" (writable when the global lock
@@ -227,16 +233,20 @@ func (p *PathMapping) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AuthIdentity defines a user identity with access to a lore spec.
+// AuthIdentity defines a user identity and its per-docset grants.
 type AuthIdentity struct {
-	Name      string   `json:"name"`
-	Comment   string   `json:"comment,omitempty"`
-	PublicKey string   `json:"public_key"`
-	Lore      string   `json:"lore"`
-	Publish   []string `json:"publish,omitempty"` // writable docsets; empty = all in lore
+	Name    string `json:"name"`
+	Comment string `json:"comment,omitempty"`
+	// PublicKey is optional: an identity may exist purely as a passkey/token
+	// login target (no SSH key). Empty = no SSH public-key auth for this identity.
+	PublicKey string `json:"public_key,omitempty"`
+	// Docsets maps a docset name to the grant this identity holds on it
+	// (e.g. "ro", "rw", "publish"). Grant names must be registered grant types
+	// at server startup, else the server refuses to boot (fail-closed).
+	Docsets map[string]string `json:"docsets"`
 	// Home names the docset that serves as this identity's home directory. Its
 	// display path becomes $HOME and the session's initial working directory.
-	// Must be one of the docsets in the identity's lore. Empty = no home.
+	// Must be one of the docsets in the identity's grants. Empty = no home.
 	Home string `json:"home,omitempty"`
 	// Capabilities are the extra capabilities this identity holds, e.g.
 	// "spawn" to authorize the async external-work command.
@@ -872,29 +882,31 @@ func LoadAuthConfig(path string) (*AuthConfig, error) {
 		return nil, err
 	}
 
-	for _, ident := range auth.Identities {
-		docsetNames, ok := auth.Lore[ident.Lore]
-		if !ok {
-			return nil, fmt.Errorf("identity %q references unknown lore %q", ident.Name, ident.Lore)
+	// Every docset referenced by an identity's grants or by the anonymous
+	// default must exist; home must be one of the identity's granted docsets.
+	// Grant *names* are validated against the registered grant types at server
+	// startup (fail-closed), not here — config parsing does not know the plugin
+	// set.
+	for name, grant := range auth.Default {
+		if grant == "" {
+			return nil, fmt.Errorf("default grant for docset %q is empty", name)
 		}
-		if ident.Home != "" {
-			inLore := false
-			for _, ds := range docsetNames {
-				if ds == ident.Home {
-					inLore = true
-					break
-				}
-			}
-			if !inLore {
-				return nil, fmt.Errorf("identity %q home docset %q is not in its lore %q", ident.Name, ident.Home, ident.Lore)
-			}
+		if _, ok := auth.Docsets[name]; !ok {
+			return nil, fmt.Errorf("default references unknown docset %q", name)
 		}
 	}
-
-	for loreName, docsetNames := range auth.Lore {
-		for _, ds := range docsetNames {
-			if _, ok := auth.Docsets[ds]; !ok {
-				return nil, fmt.Errorf("lore %q references unknown docset %q", loreName, ds)
+	for _, ident := range auth.Identities {
+		for name, grant := range ident.Docsets {
+			if grant == "" {
+				return nil, fmt.Errorf("identity %q grant for docset %q is empty", ident.Name, name)
+			}
+			if _, ok := auth.Docsets[name]; !ok {
+				return nil, fmt.Errorf("identity %q references unknown docset %q", ident.Name, name)
+			}
+		}
+		if ident.Home != "" {
+			if _, ok := ident.Docsets[ident.Home]; !ok {
+				return nil, fmt.Errorf("identity %q home docset %q is not in its grants", ident.Name, ident.Home)
 			}
 		}
 	}

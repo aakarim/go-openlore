@@ -7,6 +7,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
 // Step 1 of Part C: `publish` no longer writes straight to disk — it commits
@@ -28,9 +29,16 @@ func TestPublish_GoesThroughScopedVFS(t *testing.T) {
 	}
 
 	// Session can see both docsets but may only write /jared.
-	fs := newScopedWriteFS(base, []string{"/jared"})
+	authz := func(_ vfs.ChangeAction, p string) bool {
+		clean := vfs.CleanPath(p)
+		return clean == "/jared" || strings.HasPrefix(clean, "/jared/")
+	}
+	fs := newScopedWriteFS(base, authz)
 	sh := shell.NewShell(fs)
-	sh.SetPublishTargets([]cmds.PublishTarget{{Name: "jared"}, {Name: "claw"}})
+	sh.SetPublishTargets([]cmds.PublishTarget{
+		{Name: "jared", InboxPath: "/jared"},
+		{Name: "claw", InboxPath: "/claw"},
+	})
 
 	// In-scope publish commits and reads back through the VFS.
 	if out, errs, code := run(sh, "echo hello | publish /jared/topic.md"); code != 0 {
@@ -50,5 +58,51 @@ func TestPublish_GoesThroughScopedVFS(t *testing.T) {
 	}
 	if _, _, c := run(sh, "cat /claw/topic.md"); c == 0 {
 		t.Fatalf("out-of-scope publish must not write /claw/topic.md")
+	}
+}
+
+// TestPublish_RoutesIntoInbox pins that `publish /<docset>/<rest>` writes into
+// the docset's configured inbox (InboxPath/<rest>), not the docset root — the
+// only place a publish grant may create files.
+func TestPublish_RoutesIntoInbox(t *testing.T) {
+	dir := t.TempDir()
+	base := NewDirFS(dir, config.FilesConfig{})
+	if err := base.SetWriteable(); err != nil {
+		t.Fatalf("SetWriteable: %v", err)
+	}
+	if err := base.Mkdir("/alfie"); err != nil {
+		t.Fatalf("seed mkdir /alfie: %v", err)
+	}
+	if err := base.Mkdir("/alfie/inbox"); err != nil {
+		t.Fatalf("seed mkdir /alfie/inbox: %v", err)
+	}
+
+	// Publish grant semantics: create/edit only inside /alfie/inbox, no deletes.
+	authz := func(_ vfs.ChangeAction, p string) bool {
+		clean := vfs.CleanPath(p)
+		return clean == "/alfie/inbox" || strings.HasPrefix(clean, "/alfie/inbox/")
+	}
+	fs := newScopedWriteFS(base, authz)
+	sh := shell.NewShell(fs)
+	sh.SetPublishTargets([]cmds.PublishTarget{{Name: "alfie", InboxPath: "/alfie/inbox"}})
+
+	// publish /alfie/from-miles.md lands in /alfie/inbox/from-miles.md.
+	if out, errs, code := run(sh, "echo hi | publish /alfie/from-miles.md"); code != 0 {
+		t.Fatalf("publish into inbox failed: code=%d out=%q err=%q", code, out, errs)
+	}
+	if out, _, _ := run(sh, "cat /alfie/inbox/from-miles.md"); out != "hi\n" {
+		t.Fatalf("published content = %q, want %q", out, "hi\n")
+	}
+	// It must NOT have written the docset root path.
+	if _, _, c := run(sh, "cat /alfie/from-miles.md"); c == 0 {
+		t.Fatalf("publish must not write to the docset root")
+	}
+
+	// Nested path is preserved under the inbox.
+	if _, errs, code := run(sh, "echo x | publish /alfie/sub/deep.md"); code != 0 {
+		t.Fatalf("nested publish failed: err=%q", errs)
+	}
+	if out, _, _ := run(sh, "cat /alfie/inbox/sub/deep.md"); out != "x\n" {
+		t.Fatalf("nested published content = %q, want %q", out, "x\n")
 	}
 }

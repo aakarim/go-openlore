@@ -39,24 +39,24 @@ func printLoreUsage(w io.Writer) {
 func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer) int {
 	docsets := ctx.Docsets()
 
-	rows := [][4]string{{"DOCSET", "ACCESS", "ATTRIBUTES", "PATHS"}}
+	rows := [][4]string{{"DOCSET", "GRANT", "ATTRIBUTES", "PATHS"}}
 	for _, d := range docsets {
-		access := "r"
-		if d.Writable {
-			access = "rw"
+		grant := d.Grant
+		if grant == "" {
+			grant = "ro"
 		}
 		var attrs []string
 		if d.Home {
 			attrs = append(attrs, "home")
 		}
-		if d.HasPublish {
-			attrs = append(attrs, "publish")
+		if d.Inbox {
+			attrs = append(attrs, "inbox")
 		}
 		attrStr := "-"
 		if len(attrs) > 0 {
 			attrStr = strings.Join(attrs, ",")
 		}
-		rows = append(rows, [4]string{d.Name, access, attrStr, strings.Join(d.Paths, ",")})
+		rows = append(rows, [4]string{d.Name, grant, attrStr, strings.Join(d.Paths, ",")})
 	}
 
 	// Column widths from every cell except the last column (which is ragged).
