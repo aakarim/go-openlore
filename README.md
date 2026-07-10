@@ -384,12 +384,25 @@ registration. A plugin implements one or more provider interfaces:
 | `GrantTypeProvider` | named grant types (e.g. `publish`) |
 | `CommandProvider` | `lore` subcommands (`LoreCommands() []cmds.LoreSub`) |
 | `MetaExtenderProvider` | fields added to `lore meta` records |
+| `PluginInfoProvider` | plugin name + version (`Info() PluginInfo`), logged at boot |
 
 Built-in plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers
 add their own via `Server.RegisterPlugin`. A plugin can extend the introspection
 surface without the `lore` dispatcher knowing about it: `CommandProvider` adds
 whole subcommands, and `MetaExtenderProvider` enriches an existing command's
 output (the okf plugin uses it to annotate `lore meta` — see below).
+
+Every built-in plugin reports a name and semantic version via
+`PluginInfoProvider`, recorded in the server's boot logs as it registers, so it
+is always clear which plugins — and which versions — are active:
+
+```
+INFO plugin registered name=shellexec version=1.0.0
+INFO plugin registered name=okf version=0.1.0
+INFO plugin registered name=inbox version=1.0.0
+```
+
+The `okf` version tracks the OKF spec revision it validates (OKF v0.1).
 
 ### OKF Validator
 

@@ -152,7 +152,14 @@ func (p *okfPlugin) MetaExtenders() []cmds.MetaExtender {
 	}
 }
 
+// Info implements PluginInfoProvider. The version tracks the OKF spec revision
+// the validator targets (OKF v0.1).
+func (p *okfPlugin) Info() PluginInfo {
+	return PluginInfo{Name: "okf", Version: "0.1.0"}
+}
+
 var (
 	_ WriteMiddlewareProvider = (*okfPlugin)(nil)
 	_ MetaExtenderProvider    = (*okfPlugin)(nil)
+	_ PluginInfoProvider      = (*okfPlugin)(nil)
 )

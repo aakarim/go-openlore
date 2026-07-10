@@ -662,6 +662,13 @@ func (s *Server) registerPlugin(p any) {
 			cmds.RegisterMetaExtender(e)
 		}
 	}
+	// Record the plugin's identity + version in the boot logs. Logged per
+	// registration so it captures plugins registered after NewServer (e.g. the
+	// inbox plugin, wired by the CLI via RegisterPlugin) too.
+	if ip, ok := p.(PluginInfoProvider); ok && s.logger != nil {
+		info := ip.Info()
+		s.logger.Info("plugin registered", "name", info.Name, "version", info.Version)
+	}
 }
 
 // writeChain composes the admission (pre-commit) middleware around a terminal

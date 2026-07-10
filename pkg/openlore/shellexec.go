@@ -174,6 +174,16 @@ func (p *shellexecPlugin) PostCommitMiddleware() []PostCommitMiddleware {
 	return mws
 }
 
+// Info implements PluginInfoProvider.
+func (p *shellexecPlugin) Info() PluginInfo { return PluginInfo{Name: "shellexec", Version: "1.0.0"} }
+
+var (
+	_ WriteMiddlewareProvider = (*shellexecPlugin)(nil)
+	_ ReadMiddlewareProvider  = (*shellexecPlugin)(nil)
+	_ PostCommitProvider      = (*shellexecPlugin)(nil)
+	_ PluginInfoProvider      = (*shellexecPlugin)(nil)
+)
+
 // exec runs c and returns a non-nil error only when the caller should abort the
 // operation: synchronous, failed, fail_on_error set, and abortOnFail true
 // (pre_read / pre_commit). Async runs in the background and never aborts;
