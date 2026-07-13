@@ -290,6 +290,50 @@ func TestScopedReadFS_NestedDocsetCarveOut(t *testing.T) {
 	}
 }
 
+func TestScopedReadFS_HidesUngrantDocsetAncestorsFromRootGrant(t *testing.T) {
+	merge := NewMergeFS()
+	merge.SetRoot(NewFSAdapter(fstest.MapFS{
+		"readme.md":                 {Data: []byte("root")},
+		"agent/jared/secret.md":     {Data: []byte("jared")},
+		"user/adil/private.md":      {Data: []byte("adil")},
+		"channel/general/shared.md": {Data: []byte("shared")},
+	}))
+	boundaries := []string{"/", "/agent/jared", "/user/adil", "/channel/general"}
+	guest := newScopedReadFS(merge, []string{"/"}, boundaries)
+
+	entries, err := guest.ReadDir("/")
+	if err != nil {
+		t.Fatalf("ReadDir(/): %v", err)
+	}
+	for _, entry := range entries {
+		if entry.FileName == "agent" || entry.FileName == "user" || entry.FileName == "channel" {
+			t.Fatalf("guest root listing exposed namespace ancestor %q: %+v", entry.FileName, entries)
+		}
+	}
+	for _, hidden := range []string{"/agent", "/user", "/channel"} {
+		if _, err := guest.Stat(hidden); err == nil {
+			t.Fatalf("guest Stat(%s) must be hidden", hidden)
+		}
+		if _, err := guest.ReadDir(hidden); err == nil {
+			t.Fatalf("guest ReadDir(%s) must be hidden", hidden)
+		}
+	}
+
+	// A grant on a nested docset restores only the ancestors needed to reach it.
+	jared := newScopedReadFS(merge, []string{"/", "/agent/jared"}, boundaries)
+	if _, err := jared.ReadDir("/agent"); err != nil {
+		t.Fatalf("granted docset ancestor /agent should be navigable: %v", err)
+	}
+	if _, err := jared.ReadFile("/agent/jared/secret.md"); err != nil {
+		t.Fatalf("granted nested docset should be readable: %v", err)
+	}
+	for _, hidden := range []string{"/user", "/channel"} {
+		if _, err := jared.Stat(hidden); err == nil {
+			t.Fatalf("ungranted namespace %s must remain hidden", hidden)
+		}
+	}
+}
+
 func TestScopedReadFS_HidesSiblingDocsets(t *testing.T) {
 	merge := NewMergeFS()
 	merge.SetRoot(NewFSAdapter(fstest.MapFS{

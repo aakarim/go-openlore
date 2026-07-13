@@ -332,6 +332,18 @@ func (s *scopedReadFS) within(p string) bool {
 	if bestRoot == "" {
 		return false // no readable root covers p
 	}
+	// A namespace directory leading to a nested docset is navigation-only. An
+	// ancestor grant (especially a docset at "/") must not make containers such
+	// as /agent, /user, or /channel visible unless they lead to a nested docset
+	// this identity can actually read; ancestor() handles that case below.
+	for _, boundary := range s.boundaries {
+		if boundary == clean {
+			continue
+		}
+		if clean == "/" || strings.HasPrefix(boundary, clean+"/") {
+			return false
+		}
+	}
 	bestBoundary := ""
 	for _, b := range s.boundaries {
 		if pathWithinRoot(b, clean) && (bestBoundary == "" || len(b) > len(bestBoundary)) {
