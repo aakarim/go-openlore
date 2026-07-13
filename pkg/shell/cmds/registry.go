@@ -23,6 +23,7 @@ func init() {
 	Register("tree", CmdTree)
 	Register("stat", CmdStat)
 	Register("mkdir", CmdMkdir)
+	Register("mv", CmdMv)
 	Register("rm", CmdRm)
 	// text
 	Register("sort", CmdSort)

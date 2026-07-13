@@ -250,7 +250,7 @@ confines create/edit to. `lore docsets` surfaces only the *presence* of an inbox
 
 ### What's NOT Supported (By Design)
 
-No `mv`, `cp`, `chmod`, `wget`, `curl`, `bash -c`, or `exec` from a normal session. The shell is an interpreter, not a real bash process. The filesystem is read-only by default; when writing is enabled the only mutation surface is the whole-file write verbs (`write`, `>`, `>>`, `tee`, `patch`, `sed -i`), `mkdir` / `mkdir -p` inside docsets, `rm` / `rm -r` inside docsets, `publish`, and — for explicitly trusted identities — `spawn` (see [Writing](#writing)). There is no streaming, partial, or offset write anywhere.
+No `cp`, `chmod`, `wget`, `curl`, `bash -c`, or `exec` from a normal session. The shell is an interpreter, not a real bash process. The filesystem is read-only by default; when writing is enabled the only mutation surface is the whole-file write verbs (`write`, `>`, `>>`, `tee`, `patch`, `sed -i`), file moves with `mv`, `mkdir` / `mkdir -p` inside docsets, `rm` / `rm -r` inside docsets, `publish`, and — for explicitly trusted identities — `spawn` (see [Writing](#writing)). There is no streaming, partial, or offset write anywhere.
 
 ## Skills
 
@@ -315,10 +315,14 @@ cat change.diff | patch /mydocset/x.md   # apply a unified diff atomically
 sed -i 's/old/new/g' /mydocset/x.md      # edit in place
 mkdir /mydocset/section                   # create a folder inside a docset
 mkdir -p /mydocset/a/b/c                  # create nested folders
+mv /mydocset/draft.md /mydocset/final.md  # move a file
 rm /mydocset/old.md                       # delete a file
 rm -r /mydocset/section                   # delete a folder tree (atomic)
 echo "# API" | publish mydocset api.md   # publish a new source
 ```
+
+`mv` moves files only; directory moves are not supported because the VFS has no
+atomic tree-write operation. Use `mkdir` plus explicit file moves instead.
 
 Key properties:
 
