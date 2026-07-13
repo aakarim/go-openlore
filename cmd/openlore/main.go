@@ -388,6 +388,7 @@ func main() {
 	allowed := flag.String("allowed", "", "comma-separated file patterns to serve (e.g. '*.md,*.txt')")
 	ignore := flag.String("ignore", "", "comma-separated patterns to ignore (e.g. '.git,node_modules')")
 	readonly := flag.Bool("readonly", true, "global write lock; pass --readonly=false to enable the experimental writable substrate")
+	logUnsupported := flag.Bool("log-unsupported", false, "log unsupported shell commands and flags")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: openlore [flags] [directory]\n\n")
@@ -479,6 +480,9 @@ func main() {
 	}
 	if isFlagSet("readonly") {
 		opts = append(opts, openlore.WithReadonly(*readonly))
+	}
+	if *logUnsupported {
+		opts = append(opts, openlore.WithUnsupportedShellUsageLogging(true))
 	}
 
 	// Create server

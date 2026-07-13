@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -32,11 +33,19 @@ type Shell struct {
 	// docsets and publishTargets are the per-session views the host computes
 	// from the identity's lore. Read by `lore docsets` and `publish`
 	// respectively. nil for a standalone shell.
-	docsets        []cmds.DocsetInfo
-	publishTargets []cmds.PublishTarget
+	docsets                 []cmds.DocsetInfo
+	publishTargets          []cmds.PublishTarget
+	unsupportedUsageHandler func(UnsupportedUsage)
 	// metaExtenders are the plugin-contributed extenders applied by `lore meta`,
 	// installed by the host per session. nil for a standalone shell.
 	metaExtenders []meta.Extender
+}
+
+// UnsupportedUsage describes shell syntax that OpenLore did not implement.
+// Flag is empty for an unknown command.
+type UnsupportedUsage struct {
+	Command string
+	Flag    string
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -45,6 +54,28 @@ func NewShell(fs vfs.FileSystem) *Shell {
 		fs:  fs,
 		cwd: "/",
 	}
+}
+
+// SetUnsupportedUsageHandler installs optional telemetry for unknown commands
+// and unsupported flags. Command output and exit status are unaffected.
+func (s *Shell) SetUnsupportedUsageHandler(handler func(UnsupportedUsage)) {
+	s.unsupportedUsageHandler = handler
+}
+
+func (s *Shell) reportUnsupportedFlag(command, flag string) {
+	if s.unsupportedUsageHandler == nil || flag == "" || flag == "-" {
+		return
+	}
+	if strings.HasPrefix(flag, "--") {
+		flag, _, _ = strings.Cut(flag, "=")
+	} else if strings.HasPrefix(flag, "-") || strings.HasPrefix(flag, "+") {
+		flag, _, _ = strings.Cut(flag, "=")
+		runes := []rune(flag)
+		if len(runes) > 2 {
+			flag = string(runes[:2])
+		}
+	}
+	s.unsupportedUsageHandler(UnsupportedUsage{Command: command, Flag: flag})
 }
 
 // SetAllowedActions restricts the shell to the given capability classes
@@ -314,6 +345,9 @@ func (s *Shell) execCallInner(call *parser.CallExpr, w io.Writer, errW io.Writer
 	}
 
 	if cmdName == "pwd" {
+		if err := cmds.ValidateInvocation(cmdName, cmdArgs); err != nil {
+			return s.unsupportedFlag(errW, err)
+		}
 		fmt.Fprintln(w, s.cwd)
 		return 0
 	}
@@ -327,12 +361,28 @@ func (s *Shell) execCallInner(call *parser.CallExpr, w io.Writer, errW io.Writer
 			fmt.Fprintln(errW, "Type 'help' for available commands.")
 			return 127
 		}
+		if err := cmds.ValidateInvocation(cmdName, cmdArgs); err != nil {
+			return s.unsupportedFlag(errW, err)
+		}
 		return fn(s, cmdArgs, w, errW, stdin)
 	}
 
+	if s.unsupportedUsageHandler != nil {
+		s.unsupportedUsageHandler(UnsupportedUsage{Command: cmdName})
+	}
 	fmt.Fprintf(errW, "%s: command not found\n", cmdName)
 	fmt.Fprintln(errW, "Type 'help' for available commands.")
 	return 127
+}
+
+func (s *Shell) unsupportedFlag(errW io.Writer, err error) int {
+	var flagErr *cmds.UnsupportedFlagError
+	if !errors.As(err, &flagErr) {
+		return 2
+	}
+	fmt.Fprintln(errW, flagErr)
+	s.reportUnsupportedFlag(flagErr.Command, flagErr.Flag)
+	return 2
 }
 
 func (s *Shell) execBinary(bc *parser.BinaryCmd, w io.Writer, errW io.Writer, stdin io.Reader) int {

@@ -58,7 +58,7 @@ func TestMkdirMultiple(t *testing.T) {
 }
 
 func TestMkdirUnknownFlag(t *testing.T) {
-	assertExitCode(t, testFS(), "mkdir -z /docs/z", 1)
+	assertExitCode(t, testFS(), "mkdir -z /docs/z", 2)
 }
 
 func TestMkdirMissingOperand(t *testing.T) {
