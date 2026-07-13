@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/shell/parser"
 	"github.com/aakarim/go-openlore/pkg/vfs"

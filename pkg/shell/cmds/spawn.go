@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
