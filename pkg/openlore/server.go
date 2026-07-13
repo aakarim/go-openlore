@@ -20,7 +20,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"

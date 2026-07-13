@@ -3,7 +3,7 @@ package cmds
 import (
 	"io"
 
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
