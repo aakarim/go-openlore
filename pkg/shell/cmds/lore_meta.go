@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 )
 
 // cmdLoreMeta is the `lore meta` command adapter. It is shell plumbing only: it

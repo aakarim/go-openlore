@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )

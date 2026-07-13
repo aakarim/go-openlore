@@ -7,7 +7,7 @@ import (
 	"path"
 
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/okf"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )

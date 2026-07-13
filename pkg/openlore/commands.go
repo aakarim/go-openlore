@@ -1,7 +1,7 @@
 package openlore
 
 import (
-	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 )
 
