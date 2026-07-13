@@ -57,23 +57,12 @@ tokens:
   refresh_ttl: 720h
 
 folders:
-  - name: knowledge
-    path: ./published/knowledge
-  - name: jared
-    path: ./published/jared
-  - name: claw
-    path: ./published/claw
-  - name: cor
-    path: ./published/cor
-  - name: ray
-    path: ./published/ray
-  - name: razer
-    path: ./published/razer
-  - name: miles
-    path: ./published/miles
-  - name: zeb
-    path: ./published/zeb
-  - name: adil
-    path: ./published/adil
-  - name: alfie
-    path: ./published/alfie
+  # Organizational containers are mounted once; lore.json defines the child
+  # docsets and their grants. The parent paths themselves have no docset, so
+  # direct writes to /agent, /user, or /channel remain denied.
+  - name: agent
+    path: ./published/agent
+  - name: user
+    path: ./published/user
+  - name: channel
+    path: ./published/channel
