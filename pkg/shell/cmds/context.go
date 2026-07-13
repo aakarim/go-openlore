@@ -43,19 +43,6 @@ type CmdContext interface {
 	MetaExtenders() []meta.Extender
 }
 
-type unsupportedFlagReporter interface {
-	ReportUnsupportedFlag(command, flag string)
-}
-
-// ReportUnsupportedFlag records a flag the command parser does not implement.
-// The optional interface keeps commands usable with lightweight CmdContext
-// implementations that do not collect telemetry.
-func ReportUnsupportedFlag(ctx CmdContext, command, flag string) {
-	if reporter, ok := ctx.(unsupportedFlagReporter); ok {
-		reporter.ReportUnsupportedFlag(command, flag)
-	}
-}
-
 // DocsetInfo describes one docset a session can access. It is the per-session
 // view surfaced by `lore docsets` — the host resolves it from the identity's
 // grants at session creation.
