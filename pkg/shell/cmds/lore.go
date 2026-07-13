@@ -74,11 +74,8 @@ func init() {
 		Summary: "List the docsets you can access, their paths, and attributes",
 		Run:     cmdLoreDocsets,
 	})
-	RegisterLoreSub(LoreSub{
-		Name:    "meta",
-		Summary: "Emit each document's frontmatter as JSON (NDJSON), cwd-scoped",
-		Run:     cmdLoreMeta,
-	})
+	// `lore meta` is registered by the openlore package (its scanning logic is
+	// domain logic, so it lives there and plugs into this dispatcher).
 }
 
 // cmdLoreDocsets prints an aligned, greppable table of the session's accessible

@@ -13,10 +13,10 @@ type CommandProvider interface {
 
 // MetaExtenderProvider is implemented by a plugin that enriches `lore meta`
 // records. registerPlugin detects it and registers each extender
-// (cmds.RegisterMetaExtender). This is how the okf plugin annotates documents
-// with OKF conformance in `lore meta` output where OKF applies, so read-side
+// (registerMetaExtender). This is how the okf plugin annotates documents with
+// OKF conformance in `lore meta` output where OKF applies, so read-side
 // discovery agrees with write-side enforcement — without coupling the generic
-// `lore meta` reader to the OKF spec.
+// `lore meta` reader (see meta.go) to the OKF spec.
 type MetaExtenderProvider interface {
-	MetaExtenders() []cmds.MetaExtender
+	MetaExtenders() []MetaExtender
 }

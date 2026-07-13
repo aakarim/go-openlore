@@ -659,7 +659,7 @@ func (s *Server) registerPlugin(p any) {
 	}
 	if mp, ok := p.(MetaExtenderProvider); ok {
 		for _, e := range mp.MetaExtenders() {
-			cmds.RegisterMetaExtender(e)
+			registerMetaExtender(e)
 		}
 	}
 	// Record the plugin's identity + version in the boot logs. Logged per

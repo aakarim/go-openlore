@@ -307,8 +307,9 @@ func TestRegisterPlugin_WiresOKFIntoLoreMeta(t *testing.T) {
 	docsets := map[string]config.DocsetSpec{
 		"wiki": docset("/wiki", &config.OKFDocsetConfig{}),
 	}
+	t.Cleanup(func() { metaExtenders = nil })
 	s := &Server{grants: newGrantRegistry()}
-	s.registerPlugin(newOKF(docsets, nil)) // must call cmds.RegisterMetaExtender
+	s.registerPlugin(newOKF(docsets, nil)) // must call registerMetaExtender
 
 	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
 	sh.SetCwd("/wiki")

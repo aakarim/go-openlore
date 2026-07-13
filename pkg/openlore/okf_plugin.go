@@ -8,7 +8,6 @@ import (
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/okf"
-	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -135,8 +134,8 @@ func (p *okfPlugin) WriteMiddleware() []WriteMiddleware {
 //
 //	"okf": {"valid": true}                       // conformant
 //	"okf": {"valid": false, "error": "<reason>"} // non-conformant
-func (p *okfPlugin) MetaExtenders() []cmds.MetaExtender {
-	return []cmds.MetaExtender{
+func (p *okfPlugin) MetaExtenders() []MetaExtender {
+	return []MetaExtender{
 		func(absPath string, content []byte, _ map[string]any) map[string]any {
 			oc := p.resolve(absPath)
 			if oc == nil || !matchesOKFPatterns(absPath, oc.Patterns) {
