@@ -1,19 +1,21 @@
 package openlore
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
+	"sort"
 	"strings"
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
-// validateGrants verifies that every grant name referenced by the auth config
-// (the anonymous default and each identity's docset grants) is a registered
-// grant type. It runs at startup, after plugins have registered their grant
-// types, so a config referencing an unregistered grant (e.g. `publish` without
-// the inbox plugin) fails closed rather than silently denying all access.
+// validateGrants verifies that every grant name referenced by a docset ACL is a
+// registered grant type. It runs at startup, after plugins have registered
+// their grant types, so a config referencing an unregistered grant (e.g.
+// `publish` without the inbox plugin) fails closed rather than silently denying
+// all access.
 func (s *Server) validateGrants() error {
 	if !s.authEnforced {
 		return nil
@@ -24,15 +26,15 @@ func (s *Server) validateGrants() error {
 		}
 		return nil
 	}
-	for docset, grant := range s.auth.Default {
-		if err := check(fmt.Sprintf("default grant for docset %q", docset), grant); err != nil {
-			return err
-		}
-	}
-	for _, ident := range s.auth.Identities {
-		for docset, grant := range ident.Docsets {
-			if err := check(fmt.Sprintf("identity %q grant for docset %q", ident.Name, docset), grant); err != nil {
+	for docset, ds := range s.auth.Docsets {
+		for role, grant := range ds.Access.Allow {
+			if err := check(fmt.Sprintf("docset %q role %q", docset, role), grant); err != nil {
 				return err
+			}
+			if role == "guest" {
+				if g, _ := s.grants.get(grant); g.AllowsWrite() {
+					return fmt.Errorf("auth config: guest grant %q on docset %q is writable", grant, docset)
+				}
 			}
 		}
 	}
@@ -115,6 +117,135 @@ func (s *Server) validateGrants() error {
 	return nil
 }
 
+func (s *Server) currentPolicy(id Identity) (AuthorizationPolicy, error) {
+	if s.authorizationStore == nil {
+		return AuthorizationPolicy{}, fmt.Errorf("authorization store unavailable")
+	}
+	p := id.Principal
+	if p.IdentityName == "" {
+		p.IdentityName = id.IdentityName
+	}
+	policy, err := s.authorizationStore.ResolveAuthorization(context.Background(), p)
+	if err != nil {
+		return AuthorizationPolicy{}, err
+	}
+	if policy.IdentityName != p.IdentityName {
+		return AuthorizationPolicy{}, fmt.Errorf("authorization identity %q does not match authenticated identity %q", policy.IdentityName, p.IdentityName)
+	}
+	guest := p.IdentityName == "guest"
+	if guest {
+		if len(policy.Roles) != 1 || policy.Roles[0] != "guest" || policy.HomeDocset != "" {
+			return AuthorizationPolicy{}, fmt.Errorf("invalid guest authorization policy")
+		}
+	} else if policy.IdentityName == "" {
+		return AuthorizationPolicy{}, fmt.Errorf("empty authorization identity")
+	}
+	seen := map[string]bool{}
+	for _, role := range policy.Roles {
+		if role == "" || strings.TrimSpace(role) != role || seen[role] {
+			return AuthorizationPolicy{}, fmt.Errorf("invalid or duplicate authorization role %q", role)
+		}
+		seen[role] = true
+		if role == "guest" {
+			if !guest {
+				return AuthorizationPolicy{}, fmt.Errorf("non-guest identity received guest role")
+			}
+		} else if _, ok := s.auth.Roles[role]; !ok {
+			return AuthorizationPolicy{}, fmt.Errorf("unknown authorization role %q", role)
+		}
+	}
+	if policy.HomeDocset != "" {
+		home, ok := s.auth.Docsets[policy.HomeDocset]
+		if !ok {
+			return AuthorizationPolicy{}, fmt.Errorf("unknown authorization home %q", policy.HomeDocset)
+		}
+		for _, denied := range home.Access.Deny {
+			if seen[denied] {
+				return AuthorizationPolicy{}, fmt.Errorf("authorization role %q is denied on home %q", denied, policy.HomeDocset)
+			}
+		}
+	}
+	return policy, nil
+}
+
+func (s *Server) effectiveGrantNames(id Identity, name string) ([]string, bool) {
+	if !s.authEnforced {
+		if name == "public" {
+			return []string{"rw"}, true
+		}
+		return nil, false
+	}
+	var policy AuthorizationPolicy
+	if id.policySnapshot != nil {
+		policy = *id.policySnapshot
+	} else {
+		var err error
+		policy, err = s.currentPolicy(id)
+		if err != nil {
+			return nil, false
+		}
+	}
+	ds, ok := s.auth.Docsets[name]
+	if !ok {
+		return nil, false
+	}
+	for _, denied := range ds.Access.Deny {
+		for _, role := range policy.Roles {
+			if denied == role {
+				return nil, false
+			}
+		}
+	}
+	names := map[string]bool{}
+	for _, role := range policy.Roles {
+		if grant := ds.Access.Allow[role]; grant != "" {
+			names[grant] = true
+		}
+	}
+	if policy.IdentityName != "guest" && policy.HomeDocset == name {
+		names["rw"] = true
+	}
+	out := make([]string, 0, len(names))
+	for grant := range names {
+		out = append(out, grant)
+	}
+	sort.Strings(out)
+	return out, len(out) > 0
+}
+
+func (s *Server) hasCurrentCapability(id Identity, capability string) bool {
+	id.policySnapshot = nil
+	policy, err := s.currentPolicy(id)
+	if err != nil {
+		return false
+	}
+	return s.hasCapabilityForPolicy(policy, capability)
+}
+
+func (s *Server) hasCapabilityForPolicy(policy AuthorizationPolicy, capability string) bool {
+	allowed := false
+	for _, roleName := range policy.Roles {
+		role, ok := s.auth.Roles[roleName]
+		if !ok {
+			if roleName == "guest" {
+				continue
+			}
+			return false
+		}
+		for _, denied := range role.Deny.Capabilities {
+			if denied == capability {
+				return false
+			}
+		}
+		for _, value := range role.Allow.Capabilities {
+			if value == capability {
+				allowed = true
+			}
+		}
+	}
+	return allowed
+}
+
 // displayPath returns a path mapping's cleaned display (virtual) path, falling
 // back to its source when no display override is set.
 func displayPath(pm config.PathMapping) string {
@@ -157,17 +288,23 @@ func (s *Server) canonicalPath(p string) string {
 
 func (s *Server) aliasesForIdentity(id Identity) []pathAlias {
 	var aliases []pathAlias
-	for name, grantName := range id.Grants {
+	for name := range s.auth.Docsets {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
 		}
-		grant, ok := s.grants.get(grantName)
+		grantNames, ok := s.effectiveGrantNames(id, name)
 		if !ok {
 			continue
 		}
 		target := primaryDisplayPath(ds)
-		if target == "" || !grant.CanRead(ds, target) {
+		readable := false
+		for _, grantName := range grantNames {
+			if grant, ok := s.grants.get(grantName); ok && grant.CanRead(ds, target) {
+				readable = true
+			}
+		}
+		if target == "" || !readable {
 			continue
 		}
 		for _, alias := range ds.Aliases {
@@ -208,25 +345,26 @@ func (s *Server) mostSpecificDocset(p string) (string, config.DocsetSpec, bool) 
 	return bestName, bestDS, true
 }
 
-// grantForPath resolves the grant that governs display path p for this identity.
-// It finds the most-specific docset covering p (across all docsets) and returns
-// its grant only if the identity actually holds one on THAT docset. A grant on
-// an ancestor docset (e.g. the root docset) does not authorize p when a nested
-// docset carves it out and the identity has no grant on the nested docset.
-func (s *Server) grantForPath(id Identity, p string) (config.DocsetSpec, GrantType, bool) {
+// grantsForPath resolves the grants that govern display path p for this
+// identity. It finds the most-specific docset covering p (across all docsets)
+// and returns the grants contributed by the identity's roles on THAT docset. An
+// ancestor docset ACL does not authorize p when a nested docset carves it out.
+func (s *Server) grantsForPath(id Identity, p string) (config.DocsetSpec, []GrantType, bool) {
 	name, ds, ok := s.mostSpecificDocset(p)
 	if !ok {
 		return config.DocsetSpec{}, nil, false
 	}
-	grantName, ok := id.Grants[name]
+	grantNames, ok := s.effectiveGrantNames(id, name)
 	if !ok {
 		return config.DocsetSpec{}, nil, false // carved out: no grant on the governing docset
 	}
-	grant, ok := s.grants.get(grantName)
-	if !ok {
-		return config.DocsetSpec{}, nil, false
+	var grants []GrantType
+	for _, grantName := range grantNames {
+		if grant, ok := s.grants.get(grantName); ok {
+			grants = append(grants, grant)
+		}
 	}
-	return ds, grant, true
+	return ds, grants, len(grants) > 0
 }
 
 // allDocsetRoots returns the display roots of every configured docset — the full
@@ -247,6 +385,7 @@ func (s *Server) allDocsetRoots() []string {
 // write, the identity holds a grant on the docset containing p, that docset is
 // not per-docset readonly, and the grant permits the action on that path.
 func (s *Server) identityCanWrite(id Identity, action vfs.ChangeAction, p string) bool {
+	id.policySnapshot = nil
 	if s.config.Readonly {
 		return false // global write lock closed
 	}
@@ -254,14 +393,29 @@ func (s *Server) identityCanWrite(id Identity, action vfs.ChangeAction, p string
 		return false // token scope ceiling: only full authority may write
 	}
 	p = s.canonicalPath(p)
-	ds, grant, ok := s.grantForPath(id, p)
+	if action == vfs.ChangeActionRemoveAll {
+		for _, candidate := range s.auth.Docsets {
+			for _, pm := range candidate.Paths {
+				root := displayPath(pm)
+				if p != root && pathWithinRoot(p, root) {
+					return false // recursive delete would cross a nested docset boundary
+				}
+			}
+		}
+	}
+	ds, grants, ok := s.grantsForPath(id, p)
 	if !ok {
 		return false
 	}
 	if ds.Readonly != nil && *ds.Readonly {
 		return false // per-docset lock can only further restrict
 	}
-	return grant.CanWrite(ds, action, p)
+	for _, grant := range grants {
+		if grant.CanWrite(ds, action, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // readableRoots returns the display roots the identity may read: the display
@@ -270,18 +424,24 @@ func (s *Server) identityCanWrite(id Identity, action vfs.ChangeAction, p string
 // build the session's read-scoping filesystem.
 func (s *Server) readableRoots(id Identity) []string {
 	var roots []string
-	for name, grantName := range id.Grants {
+	for name := range s.auth.Docsets {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
 		}
-		grant, ok := s.grants.get(grantName)
+		grantNames, ok := s.effectiveGrantNames(id, name)
 		if !ok {
 			continue
 		}
 		for _, pm := range ds.Paths {
 			root := displayPath(pm)
-			if grant.CanRead(ds, root) {
+			readable := false
+			for _, grantName := range grantNames {
+				if grant, ok := s.grants.get(grantName); ok && grant.CanRead(ds, root) {
+					readable = true
+				}
+			}
+			if readable {
 				roots = append(roots, root)
 			}
 		}
@@ -301,6 +461,7 @@ func (s *Server) readableRoots(id Identity) []string {
 // docsets sharing the same backing filesystem.
 type scopedReadFS struct {
 	vfs.FileSystem
+	writable   vfs.WritableFS
 	roots      []string // cleaned readable display roots (granted docsets + system mounts)
 	boundaries []string // cleaned display roots of ALL docsets (carve-out boundaries)
 }
@@ -313,7 +474,51 @@ func newScopedReadFS(base vfs.FileSystem, roots, boundaries []string) *scopedRea
 		}
 		return out
 	}
-	return &scopedReadFS{FileSystem: base, roots: clean(roots), boundaries: clean(boundaries)}
+	writable, _ := base.(vfs.WritableFS)
+	return &scopedReadFS{FileSystem: base, writable: writable, roots: clean(roots), boundaries: clean(boundaries)}
+}
+
+func (s *scopedReadFS) SetWriteable() error {
+	if s.writable == nil {
+		return vfs.ErrReadOnly
+	}
+	return s.writable.SetWriteable()
+}
+func (s *scopedReadFS) SetReadonly() error {
+	if s.writable == nil {
+		return nil
+	}
+	return s.writable.SetReadonly()
+}
+func (s *scopedReadFS) WriteFileAtomic(p string, data []byte, opts vfs.WriteOpts) (string, error) {
+	if s.writable == nil {
+		return "", vfs.ErrReadOnly
+	}
+	return s.writable.WriteFileAtomic(p, data, opts)
+}
+func (s *scopedReadFS) Mkdir(p string) error {
+	if s.writable == nil {
+		return vfs.ErrReadOnly
+	}
+	return s.writable.Mkdir(p)
+}
+func (s *scopedReadFS) MkdirAll(p string) error {
+	if s.writable == nil {
+		return vfs.ErrReadOnly
+	}
+	return s.writable.MkdirAll(p)
+}
+func (s *scopedReadFS) Remove(p string) error {
+	if s.writable == nil {
+		return vfs.ErrReadOnly
+	}
+	return s.writable.Remove(p)
+}
+func (s *scopedReadFS) RemoveAll(p string, opts vfs.RemoveOpts) error {
+	if s.writable == nil {
+		return vfs.ErrReadOnly
+	}
+	return s.writable.RemoveAll(p, opts)
 }
 
 // within reports whether p is readable: some readable root covers it, and no

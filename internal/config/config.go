@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/aakarim/go-openlore/pkg/vfs"
+	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -165,10 +167,27 @@ type AuthConfig struct {
 	UnknownIdentity string                `json:"unknown_identity,omitempty"`
 	DefaultCwd      string                `json:"default_cwd,omitempty"`
 	Docsets         map[string]DocsetSpec `json:"docsets"`
-	// Default is the docset→grant map applied to keyless / unrecognized callers
-	// (the former `lore.default`). Empty = no access for anonymous sessions.
+	Roles           map[string]RoleSpec   `json:"roles,omitempty"`
+	// Default is a legacy authority field retained only for JSON parsing. It is ignored.
 	Default    map[string]string `json:"default,omitempty"`
 	Identities []AuthIdentity    `json:"identities"`
+}
+
+type CapabilityRules struct {
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// RoleSpec is a reusable set of capabilities. Docset grants are resource-side
+// ACL entries, not properties of the role itself.
+type RoleSpec struct {
+	Comment string          `json:"comment,omitempty"`
+	Allow   CapabilityRules `json:"allow,omitempty"`
+	Deny    CapabilityRules `json:"deny,omitempty"`
+}
+
+type DocsetAccess struct {
+	Allow map[string]string `json:"allow,omitempty"`
+	Deny  []string          `json:"deny,omitempty"`
 }
 
 // AuthTokensConfig controls the bearer-token issuer for the MCP + HTTP API.
@@ -196,7 +215,8 @@ type JWKSSpec struct {
 
 // DocsetSpec defines a named set of path mappings.
 type DocsetSpec struct {
-	Paths []PathMapping `json:"paths"`
+	Paths  []PathMapping `json:"paths"`
+	Access DocsetAccess  `json:"access,omitempty"`
 	// Aliases are alternate display roots for the first path. They expose the
 	// same content while the first path remains canonical for home, inbox,
 	// policy, hooks, and changesets.
@@ -233,6 +253,14 @@ type PathMapping struct {
 	Display string // the path shown in the shell (empty = same as Source)
 }
 
+// MarshalJSON preserves the two input forms accepted by UnmarshalJSON.
+func (p PathMapping) MarshalJSON() ([]byte, error) {
+	if p.Display == "" || p.Display == p.Source {
+		return json.Marshal(p.Source)
+	}
+	return json.Marshal(map[string]string{p.Source: p.Display})
+}
+
 // UnmarshalJSON supports both string and {"source": "display"} forms.
 func (p *PathMapping) UnmarshalJSON(data []byte) error {
 	// Try string first
@@ -258,23 +286,21 @@ func (p *PathMapping) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AuthIdentity defines a user identity and its per-docset grants.
+// AuthIdentity defines a user identity and its role membership.
 type AuthIdentity struct {
 	Name    string `json:"name"`
 	Comment string `json:"comment,omitempty"`
 	// PublicKey is optional: an identity may exist purely as a passkey/token
 	// login target (no SSH key). Empty = no SSH public-key auth for this identity.
-	PublicKey string `json:"public_key,omitempty"`
-	// Docsets maps a docset name to the grant this identity holds on it
-	// (e.g. "ro", "rw", "publish"). Grant names must be registered grant types
-	// at server startup, else the server refuses to boot (fail-closed).
+	PublicKey string   `json:"public_key,omitempty"`
+	Roles     []string `json:"roles,omitempty"`
+	// Docsets is a legacy authority field retained only for JSON parsing. It is ignored.
 	Docsets map[string]string `json:"docsets"`
 	// Home names the docset that serves as this identity's home directory. Its
 	// display path becomes $HOME and the session's initial working directory.
-	// Must be one of the docsets in the identity's grants. Empty = no home.
+	// Home ownership provides implicit rw unless a nested docset takes precedence.
 	Home string `json:"home,omitempty"`
-	// Capabilities are the extra capabilities this identity holds, e.g.
-	// "spawn" to authorize the async external-work command.
+	// Capabilities is a legacy authority field retained only for JSON parsing. It is ignored.
 	Capabilities []string `json:"capabilities,omitempty"`
 
 	// Match lists the token-claim predicates that resolve TO this identity.
@@ -915,34 +941,122 @@ func LoadAuthConfig(path string) (*AuthConfig, error) {
 		return nil, err
 	}
 
-	// Every docset referenced by an identity's grants or by the anonymous
-	// default must exist; home must be one of the identity's granted docsets.
-	// Grant *names* are validated against the registered grant types at server
-	// startup (fail-closed), not here — config parsing does not know the plugin
-	// set.
-	for name, grant := range auth.Default {
-		if grant == "" {
-			return nil, fmt.Errorf("default grant for docset %q is empty", name)
+	if err := ValidateAuthConfig(&auth); err != nil {
+		return nil, err
+	}
+	return &auth, nil
+}
+
+// ValidateAuthConfig validates a parsed static authorization policy. Legacy
+// authority fields are deliberately ignored.
+func ValidateAuthConfig(auth *AuthConfig) error {
+	if _, ok := auth.Roles["guest"]; ok {
+		return fmt.Errorf("role %q is reserved", "guest")
+	}
+	validateNames := func(where string, values []string) error {
+		seen := map[string]bool{}
+		for _, value := range values {
+			if value == "" || strings.TrimSpace(value) != value {
+				return fmt.Errorf("%s contains an empty or untrimmed name", where)
+			}
+			if seen[value] {
+				return fmt.Errorf("%s contains duplicate %q", where, value)
+			}
+			seen[value] = true
 		}
-		if _, ok := auth.Docsets[name]; !ok {
-			return nil, fmt.Errorf("default references unknown docset %q", name)
+		return nil
+	}
+	for name, role := range auth.Roles {
+		if name == "" || strings.TrimSpace(name) != name {
+			return fmt.Errorf("invalid role name %q", name)
+		}
+		if err := validateNames(fmt.Sprintf("role %q allow capabilities", name), role.Allow.Capabilities); err != nil {
+			return err
+		}
+		if err := validateNames(fmt.Sprintf("role %q deny capabilities", name), role.Deny.Capabilities); err != nil {
+			return err
 		}
 	}
+	homes := map[string]string{}
+	identities := map[string]bool{}
+	keys := map[string]string{}
 	for _, ident := range auth.Identities {
-		for name, grant := range ident.Docsets {
-			if grant == "" {
-				return nil, fmt.Errorf("identity %q grant for docset %q is empty", ident.Name, name)
+		if ident.Name == "" || strings.TrimSpace(ident.Name) != ident.Name {
+			return fmt.Errorf("invalid identity name %q", ident.Name)
+		}
+		if ident.Name == "guest" || ident.Name == "anonymous" {
+			return fmt.Errorf("identity %q is reserved", ident.Name)
+		}
+		if identities[ident.Name] {
+			return fmt.Errorf("duplicate identity name %q", ident.Name)
+		}
+		identities[ident.Name] = true
+		if key := strings.TrimSpace(ident.PublicKey); key != "" {
+			parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key))
+			if err != nil {
+				return fmt.Errorf("identity %q has invalid SSH public key: %w", ident.Name, err)
 			}
-			if _, ok := auth.Docsets[name]; !ok {
-				return nil, fmt.Errorf("identity %q references unknown docset %q", ident.Name, name)
+			normalized := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(parsed)))
+			if other, ok := keys[normalized]; ok {
+				return fmt.Errorf("identities %q and %q share public key", other, ident.Name)
+			}
+			keys[normalized] = ident.Name
+		}
+		if err := validateNames(fmt.Sprintf("identity %q roles", ident.Name), ident.Roles); err != nil {
+			return err
+		}
+		for _, role := range ident.Roles {
+			if role == "guest" {
+				return fmt.Errorf("identity %q cannot be assigned reserved role guest", ident.Name)
+			}
+			if _, ok := auth.Roles[role]; !ok {
+				return fmt.Errorf("identity %q references unknown role %q", ident.Name, role)
 			}
 		}
 		if ident.Home != "" {
-			if _, ok := ident.Docsets[ident.Home]; !ok {
-				return nil, fmt.Errorf("identity %q home docset %q is not in its grants", ident.Name, ident.Home)
+			if _, ok := auth.Docsets[ident.Home]; !ok {
+				return fmt.Errorf("identity %q references unknown home docset %q", ident.Name, ident.Home)
+			}
+			if other, ok := homes[ident.Home]; ok {
+				return fmt.Errorf("identities %q and %q share home docset %q", other, ident.Name, ident.Home)
+			}
+			homes[ident.Home] = ident.Name
+		}
+	}
+	for docset, ds := range auth.Docsets {
+		for role, grant := range ds.Access.Allow {
+			if grant == "" || strings.TrimSpace(grant) != grant {
+				return fmt.Errorf("docset %q has invalid grant for role %q", docset, role)
+			}
+			if role != "guest" {
+				if _, ok := auth.Roles[role]; !ok {
+					return fmt.Errorf("docset %q references unknown role %q", docset, role)
+				}
+			}
+		}
+		if err := validateNames(fmt.Sprintf("docset %q deny roles", docset), ds.Access.Deny); err != nil {
+			return err
+		}
+		for _, role := range ds.Access.Deny {
+			if role != "guest" {
+				if _, ok := auth.Roles[role]; !ok {
+					return fmt.Errorf("docset %q denies unknown role %q", docset, role)
+				}
+			}
+		}
+	}
+	for _, ident := range auth.Identities {
+		if ident.Home != "" {
+			ds := auth.Docsets[ident.Home]
+			for _, denied := range ds.Access.Deny {
+				for _, role := range ident.Roles {
+					if denied == role {
+						return fmt.Errorf("identity %q role %q is denied on its home %q", ident.Name, role, ident.Home)
+					}
+				}
 			}
 		}
 	}
 
-	return &auth, nil
+	return nil
 }

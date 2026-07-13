@@ -94,13 +94,14 @@ type Server struct {
 	// Bearer-token auth for the MCP + HTTP API (docs/mcp-bearer-auth.md).
 	// identityStore is always set (resolves claims → Identity). The rest are
 	// non-nil only when auth.tokens is configured, which enables token auth.
-	identityStore IdentityStore
-	issuer        Issuer
-	refreshStore  RefreshTokenStore
-	clientStore   ClientStore
-	authCodes     *authCodeStore
-	authorizeReqs *authorizeStore
-	tokens        *tokenEndpoint
+	identityStore      IdentityStore
+	authorizationStore AuthorizationStore
+	issuer             Issuer
+	refreshStore       RefreshTokenStore
+	clientStore        ClientStore
+	authCodes          *authCodeStore
+	authorizeReqs      *authorizeStore
+	tokens             *tokenEndpoint
 	// oidc verifies external IdP assertions for the jwt-bearer (WIF) grant. It
 	// is non-nil only when oidc_issuers are configured alongside auth.tokens.
 	oidc OIDCVerifier
@@ -176,6 +177,7 @@ func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...c
 			return nil, fmt.Errorf("loading auth config: %w", err)
 		}
 		s.auth = auth
+		s.authorizationStore = fileAuthorizationStore{auth: auth}
 		s.authEnforced = true
 
 		// Auth policy fields override config defaults
@@ -190,8 +192,8 @@ func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...c
 		}
 	} else {
 		// No auth file: run in trusted/unenforced mode as a single `public`
-		// docset rooted at "/". The anonymous identity holds an `rw` grant on it
-		// (see anonymousIdentity), so every consumer reuses normal docset scoping.
+		// docset rooted at "/". Unenforced sessions receive synthetic `rw`
+		// authority on it, so every consumer reuses normal docset scoping.
 		s.auth.Docsets = map[string]config.DocsetSpec{"public": {
 			Paths: []config.PathMapping{{Source: "/", Display: "/"}},
 		}}
@@ -448,7 +450,7 @@ func (s *Server) resolveIdentity(sess ssh.Session) Identity {
 		}
 	}
 
-	// Unrecognized key / keyless: the anonymous default identity.
+	// Unrecognized key / keyless: the reserved guest identity.
 	return withConn(conn, s.anonymousIdentity())
 }
 
@@ -459,6 +461,16 @@ func withConn(conn, resolved Identity) Identity {
 	resolved.RemoteAddr = conn.RemoteAddr
 	resolved.User = conn.User
 	resolved.PublicKey = conn.PublicKey
+	resolved.Principal.Source = "ssh"
+	resolved.Principal.Subject = resolved.IdentityName
+	resolved.Principal.Claims = map[string]any{"user": conn.User, "remote_addr": conn.RemoteAddr}
+	if conn.PublicKey != nil {
+		resolved.Principal.Claims["public_key_fingerprint"] = gossh.FingerprintSHA256(conn.PublicKey)
+		if cert, ok := conn.PublicKey.(*gossh.Certificate); ok {
+			resolved.Principal.Claims["certificate_serial"] = cert.Serial
+			resolved.Principal.Claims["certificate_principals"] = append([]string(nil), cert.ValidPrincipals...)
+		}
+	}
 	return resolved
 }
 
@@ -480,22 +492,6 @@ func (s *Server) resolveHomeDir(homeDocset string) string {
 		display = pm.Source
 	}
 	return vfs.CleanPath(display)
-}
-
-// hasWritableGrant reports whether the identity holds any grant that ever
-// permits writes (rw, publish, …). It drives coarse shell action gating: a
-// read-only identity (only `ro` grants) is offered no write verbs. Per-op
-// authorization still runs through identityCanWrite.
-func (s *Server) hasWritableGrant(id Identity) bool {
-	for name, grantName := range id.Grants {
-		if _, ok := s.auth.Docsets[name]; !ok {
-			continue
-		}
-		if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
-			return true
-		}
-	}
-	return false
 }
 
 // writeConflictPolicy resolves the policy governing whole-file overwrites to
@@ -725,16 +721,6 @@ func (s *Server) postCommitChain() PostCommitHandler {
 	return chainPostCommit(terminal, s.postCommitMW...)
 }
 
-// hasCapability reports whether have contains want.
-func hasCapability(have []string, want string) bool {
-	for _, c := range have {
-		if c == want {
-			return true
-		}
-	}
-	return false
-}
-
 // buildSessionShell constructs a fully-configured shell scoped to the given
 // identity: a per-identity filesystem (read scoping, write authorization,
 // read-tracking CAS), capability-gated allowed actions, and
@@ -747,6 +733,16 @@ func hasCapability(have []string, want string) bool {
 // single source of the layered VFS shared by both the interactive shell and the
 // SFTP subsystem so both enforce identical read scoping and write authorization.
 func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
+	if s.authEnforced && id.policySnapshot == nil {
+		if policy, err := s.currentPolicy(id); err == nil {
+			id.policySnapshot = &policy
+			id.HomeDocset = policy.HomeDocset
+			id.HomeDir = s.resolveHomeDir(policy.HomeDocset)
+		} else {
+			deny := AuthorizationPolicy{}
+			id.policySnapshot = &deny
+		}
+	}
 	// Build per-session filesystem scoped to the identity's readable roots.
 	// Docsets are display-path subtrees of a shared backing filesystem, so read
 	// scoping is by path (not mount name): a session only sees the docsets it
@@ -772,25 +768,23 @@ func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
 	if s.writeLog != nil {
 		sessionFS = newMiddlewareFS(sessionFS, Actor{ID: id.User}, s.writeChain())
 	}
-	// canWrite is the coarse authority gate shared by the FS layer and the
-	// action layer: an identity may write only when auth is enforced, it is a
-	// named identity (not anonymous), its token scope grants write, and it holds
-	// at least one write-capable grant. A WIF token narrowed to `read` (or any
-	// non-`full` scope) is read-only here even if the underlying identity is
-	// write-capable — narrowing wins, fail-closed.
-	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes) && s.hasWritableGrant(id)
-	// Per-op write authorization: every mutation is checked against the
-	// identity's grants (grant ∩ token scope ∩ readonly locks). This confines a
-	// session to exactly what its grants permit — an `rw` grant writes anywhere
-	// in its docset, a `publish` grant only creates/edits within the inbox and
-	// never deletes, and two identities sharing a docset are authorized
-	// independently per write. Anonymous/read-only identities get a nil
-	// authorizer (fully read-only). No-op when auth is not enforced.
+	// A write-capable session must be a named non-guest identity with full token
+	// scope. The per-operation authorizer below resolves current roles and grants;
+	// a read-scoped token remains read-only regardless of RBAC authority.
+	canWrite := s.authEnforced && id.IdentityName != "" && id.IdentityName != "guest" && scopeGrantsWrite(id.Scopes)
+	// Every mutation is checked against current role membership, the governing
+	// docset ACL, token scope, and readonly locks. A grant such as `publish` can
+	// further restrict actions and paths. Guest/read-only identities receive a
+	// nil authorizer and fail closed.
 	if s.authEnforced {
 		var authz writeAuthorizer
 		if canWrite {
+			// Writes deliberately resolve current policy on every operation. The
+			// session snapshot remains authoritative for its stable read view.
+			writeID := id
+			writeID.policySnapshot = nil
 			authz = func(action vfs.ChangeAction, p string) bool {
-				return s.identityCanWrite(id, action, p)
+				return s.identityCanWrite(writeID, action, p)
 			}
 		}
 		sessionFS = newScopedWriteFS(sessionFS, authz)
@@ -819,14 +813,22 @@ func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
 }
 
 func (s *Server) buildSessionShell(id Identity) *shell.Shell {
+	if s.authEnforced {
+		if policy, err := s.currentPolicy(id); err == nil {
+			id.policySnapshot = &policy
+			id.HomeDocset = policy.HomeDocset
+			id.HomeDir = s.resolveHomeDir(policy.HomeDocset)
+		} else {
+			deny := AuthorizationPolicy{}
+			id.policySnapshot = &deny
+			id.HomeDocset, id.HomeDir = "", ""
+		}
+	}
 	sessionFS := s.buildSessionFS(id)
-	// canWrite is the coarse authority gate shared by the FS layer and the
-	// action layer: an identity may write only when auth is enforced, it is a
-	// named identity (not anonymous), its token scope grants write, and it holds
-	// at least one write-capable grant. A WIF token narrowed to `read` (or any
-	// non-`full` scope) is read-only here even if the underlying identity is
-	// write-capable — narrowing wins, fail-closed.
-	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes) && s.hasWritableGrant(id)
+	// Command visibility is snapshotted, but privileged operations are narrowed
+	// again at invocation. Guest, read-scoped, and currently read-only sessions
+	// do not see write verbs.
+	canWrite := s.authEnforced && id.IdentityName != "" && id.IdentityName != "guest" && len(s.writableDocsetNames(id)) > 0
 
 	sh := shell.NewShell(sessionFS)
 	if s.config.DefaultCwd != "" {
@@ -838,7 +840,7 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	// Capability gating (Part B). Only applies when an auth config is
 	// present — without one (local `openlore .` or an embedded KB server
 	// that does its own scoping) the shell stays unrestricted. With auth,
-	// an unrecognized/anonymous identity is read-only; a recognized
+	// an unrecognized/guest identity is read-only; a recognized
 	// identity may write and publish within its docsets.
 	if s.authEnforced {
 		if canWrite {
@@ -846,13 +848,19 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 			// spawn runs an external command as the OpenLore service
 			// user, so it's gated on an explicit `spawn` capability
 			// (Part D) — never granted to ordinary writers.
-			if hasCapability(id.Capabilities, "spawn") {
+			if s.hasCapabilityForPolicy(*id.policySnapshot, "spawn") {
 				allowed = append(allowed, cmds.ActionSpawn)
 			}
 			sh.SetAllowedActions(allowed)
 		} else {
 			sh.SetAllowedActions(nil) // read-only (ActionRead implied)
 		}
+		sh.SetActionAuthorizer(func(action cmds.Action) bool {
+			if action == cmds.ActionSpawn {
+				return s.hasCurrentCapability(id, "spawn")
+			}
+			return true
+		})
 	}
 
 	// Per-session docset views for `lore docsets` and publish inboxes for
@@ -885,21 +893,27 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 // first path; `lore docsets` preserves this order for older consumers that use
 // the first row as the docset's mount.
 func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
-	if len(id.Grants) == 0 {
-		return nil
-	}
 	writable := s.writableDocsetNames(id)
 	var out []cmds.DocsetInfo
-	for name, grantName := range id.Grants {
+	for name := range s.auth.Docsets {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
+		}
+		grantNames, accessible := s.effectiveGrantNames(id, name)
+		if !accessible {
+			continue
+		}
+		legacyGrant := ""
+		if len(grantNames) == 1 && s.authorizationStore == nil {
+			legacyGrant = grantNames[0]
 		}
 		for i, pm := range ds.Paths {
 			out = append(out, cmds.DocsetInfo{
 				Name:     name,
 				Paths:    []string{displayPath(pm)},
-				Grant:    grantName,
+				Grants:   grantNames,
+				Grant:    legacyGrant,
 				Writable: writable[name],
 				Home:     i == 0 && name == id.HomeDocset,
 				Inbox:    inboxPath(ds) != "",
@@ -911,7 +925,8 @@ func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 				Name:        name,
 				Paths:       []string{vfs.CleanPath(alias)},
 				AliasTarget: target,
-				Grant:       grantName,
+				Grants:      grantNames,
+				Grant:       legacyGrant,
 				Writable:    writable[name],
 			})
 		}
@@ -928,13 +943,22 @@ func (s *Server) sessionPublishTargets(id Identity) []cmds.PublishTarget {
 		return nil
 	}
 	var out []cmds.PublishTarget
-	for name, grantName := range id.Grants {
+	for name := range s.auth.Docsets {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
 		}
-		grant, ok := s.grants.get(grantName)
-		if !ok || !grant.AllowsWrite() {
+		grantNames, ok := s.effectiveGrantNames(id, name)
+		if !ok {
+			continue
+		}
+		write := false
+		for _, grantName := range grantNames {
+			if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
+				write = true
+			}
+		}
+		if !write {
 			continue
 		}
 		inbox := inboxPath(ds)
@@ -966,7 +990,7 @@ func (s *Server) writableDocsetNames(id Identity) map[string]bool {
 	if id.IdentityName == "" || !scopeGrantsWrite(id.Scopes) {
 		return out
 	}
-	for name, grantName := range id.Grants {
+	for name := range s.auth.Docsets {
 		ds, ok := s.auth.Docsets[name]
 		if !ok {
 			continue
@@ -974,27 +998,33 @@ func (s *Server) writableDocsetNames(id Identity) map[string]bool {
 		if ds.Readonly != nil && *ds.Readonly {
 			continue
 		}
-		if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
-			out[name] = true
+		grantNames, ok := s.effectiveGrantNames(id, name)
+		if !ok {
+			continue
+		}
+		for _, grantName := range grantNames {
+			if grant, ok := s.grants.get(grantName); ok && grant.AllowsWrite() {
+				out[name] = true
+			}
 		}
 	}
 	return out
 }
 
 // anonymousIdentity returns the identity used for callers that present no
-// credential (keyless SSH, or an unauthenticated MCP/HTTP request): the auth
-// config's `default` docset→grant map when auth is enforced, or full access to
-// the synthetic `public` docset when it is not.
+// credential (keyless SSH, or an unauthenticated MCP/HTTP request). Enforced
+// sessions resolve the reserved guest role; unenforced sessions receive
+// synthetic public rw authority in effectiveGrantNames.
 func (s *Server) anonymousIdentity() Identity {
 	id := Identity{
 		SessionID:   generateSessionID(),
 		ConnectedAt: time.Now(),
 	}
 	if s.authEnforced {
-		id.Grants = s.auth.Default // nil ⇒ no access for anonymous sessions
+		id.IdentityName = "guest"
+		id.Principal = AuthenticatedPrincipal{Subject: "guest", IdentityName: "guest", Source: "guest"}
+		id.Scopes = []string{ScopeFull}
 	} else {
-		// Auth not enforced: full access to the synthetic `public` docset.
-		id.Grants = map[string]string{"public": "rw"}
 		id.Scopes = []string{ScopeFull}
 	}
 	return id

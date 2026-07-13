@@ -79,7 +79,7 @@ func TestLoreDocsets_EmptyShowsHeaderOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	if strings.TrimRight(out, "\n") != "DOCSET  GRANT  ATTRIBUTES  PATH  TARGET" {
+	if strings.TrimRight(out, "\n") != "DOCSET  GRANTS  ATTRIBUTES  PATH  TARGET" {
 		t.Fatalf("empty docsets should print header only, got:\n%q", out)
 	}
 }

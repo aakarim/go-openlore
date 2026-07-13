@@ -79,14 +79,17 @@ func init() {
 }
 
 // cmdLoreDocsets prints an aligned, greppable table of the session's accessible
-// docset mounts: name, grant, attribute tokens, display path, and canonical
+// docset mounts: name, grants, attribute tokens, display path, and canonical
 // target for alias rows.
 func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	docsets := ctx.Docsets()
 
-	rows := [][5]string{{"DOCSET", "GRANT", "ATTRIBUTES", "PATH", "TARGET"}}
+	rows := [][5]string{{"DOCSET", "GRANTS", "ATTRIBUTES", "PATH", "TARGET"}}
 	for _, d := range docsets {
-		grant := d.Grant
+		grant := strings.Join(d.Grants, ",")
+		if grant == "" {
+			grant = d.Grant
+		}
 		if grant == "" {
 			grant = "ro"
 		}

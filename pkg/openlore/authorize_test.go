@@ -122,8 +122,8 @@ func TestAuthorize_PublicChoiceMintsAnonymousToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClaims: %v", err)
 	}
-	if id.IdentityName != "" || id.Grants["public"] != "ro" {
-		t.Errorf("public token resolved to %q/%v, want anonymous with default grants", id.IdentityName, id.Grants)
+	if id.IdentityName != "guest" || id.Principal.IdentityName != "guest" {
+		t.Errorf("public token resolved to %+v, want guest principal", id)
 	}
 }
 
@@ -338,8 +338,8 @@ func TestMatchResolvesToIdentity(t *testing.T) {
 	if id.IdentityName != "alice" {
 		t.Fatalf("IdentityName = %q, want alice (via Match alias)", id.IdentityName)
 	}
-	if id.Grants["secret"] != "rw" {
-		t.Errorf("Grants = %v, want secret:rw", id.Grants)
+	if id.Principal.IdentityName != "alice" {
+		t.Errorf("principal = %+v, want alice", id.Principal)
 	}
 }
 
