@@ -6,10 +6,10 @@ import (
 
 // writeAuthorizer decides whether a session may perform a mutation action on a
 // display path. It is the per-operation authority: the server binds it to the
-// session identity's grants (Server.identityCanWrite), so two agents that can
-// both see the same docsets are still authorized independently per write, and a
-// grant like `publish` can permit create/edit only within an inbox while
-// denying deletes.
+// principal's current RBAC policy (Server.identityCanWrite), so two agents that
+// can see the same docsets are still authorized independently per write, and a
+// grant like `publish` can permit create/edit only within an inbox while denying
+// deletes.
 type writeAuthorizer func(action vfs.ChangeAction, p string) bool
 
 // scopedWriteFS gates a session's writes through a writeAuthorizer. Reads pass

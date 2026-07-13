@@ -24,7 +24,8 @@ type Shell struct {
 	// "unrestricted" — every action is allowed (the default, backward
 	// compatible). When non-nil, a command (or redirect) whose capability
 	// class is absent is treated as if it does not exist.
-	allowedActions map[cmds.Action]bool
+	allowedActions   map[cmds.Action]bool
+	actionAuthorizer func(cmds.Action) bool
 	// conflictPolicyFn resolves the write-conflict policy for a resolved path.
 	// nil means "use the default" (vfs.PolicyHash). The server sets this to a
 	// per-docset resolver; standalone shells get the default.
@@ -62,11 +63,17 @@ func (s *Shell) SetAllowedActions(actions []cmds.Action) {
 // ActionAllowed reports whether the session may perform the capability class.
 // An unrestricted shell (allowedActions == nil) permits everything.
 func (s *Shell) ActionAllowed(a cmds.Action) bool {
+	if s.actionAuthorizer != nil && !s.actionAuthorizer(a) {
+		return false
+	}
 	if s.allowedActions == nil {
 		return true
 	}
 	return s.allowedActions[a]
 }
+
+// SetActionAuthorizer installs a per-invocation narrowing check.
+func (s *Shell) SetActionAuthorizer(fn func(cmds.Action) bool) { s.actionAuthorizer = fn }
 
 // SetConflictPolicyFn installs a resolver that maps a resolved path to its
 // write-conflict policy. Passing nil restores the default (vfs.PolicyHash).

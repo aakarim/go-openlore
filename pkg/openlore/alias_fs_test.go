@@ -87,7 +87,8 @@ func TestServerAliasCanonicalizesAuthorizationAndChangesets(t *testing.T) {
 	ds.Aliases = []string{"/alfie"}
 	s.auth.Docsets["alfie"] = ds
 
-	id := Identity{IdentityName: "alfie", Grants: map[string]string{"alfie": "rw"}, Scopes: []string{ScopeFull}}
+	id := identityWithPolicy("alfie", "alfie-rw")
+	setCurrentPolicy(s, id)
 	if !s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/note.md") {
 		t.Fatal("alias path should authorize through its canonical docset")
 	}

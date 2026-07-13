@@ -631,7 +631,7 @@ type MergeFS struct {
 	mounts map[string]vfs.FileSystem
 	// system marks mount names that are control-plane (e.g. "requests") rather
 	// than lore docsets. System mounts are always readable regardless of an
-	// identity's grants (see Server.readableRoots / SystemMountPaths).
+	// identity's RBAC policy (see Server.readableRoots / SystemMountPaths).
 	system map[string]bool
 }
 
@@ -661,7 +661,7 @@ func (m *MergeFS) MountSystem(name string, fs vfs.FileSystem) {
 }
 
 // SystemMountPaths returns the display paths ("/name") of every control-plane
-// (system) mount. These are always readable regardless of an identity's grants,
+// (system) mount. These are always readable regardless of an identity's roles,
 // so the read-scoping layer includes them.
 func (m *MergeFS) SystemMountPaths() []string {
 	var out []string

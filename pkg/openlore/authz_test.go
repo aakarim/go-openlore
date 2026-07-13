@@ -18,19 +18,31 @@ func grantTestServer() *Server {
 		grants:       newGrantRegistry(),
 		config:       config.Config{Readonly: false},
 		auth: &config.AuthConfig{
+			Roles: map[string]config.RoleSpec{"alfie-rw": {}, "alfie-ro": {}, "alfie-publish": {}, "root-rw": {}, "all-rw": {}, "backend-publish": {}},
 			Docsets: map[string]config.DocsetSpec{
-				"alfie": {Paths: []config.PathMapping{{Source: "/alfie", Display: "/alfie"}}, Inbox: "inbox"},
-				"miles": {Paths: []config.PathMapping{{Source: "/miles", Display: "/miles"}}, Inbox: "inbox"},
+				"alfie": {Paths: []config.PathMapping{{Source: "/alfie", Display: "/alfie"}}, Inbox: "inbox", Access: config.DocsetAccess{Allow: map[string]string{"alfie-rw": "rw", "alfie-ro": "ro", "alfie-publish": "publish", "all-rw": "rw"}}},
+				"miles": {Paths: []config.PathMapping{{Source: "/miles", Display: "/miles"}}, Inbox: "inbox", Access: config.DocsetAccess{Allow: map[string]string{"all-rw": "rw"}}},
 			},
 		},
 	}
 	s.registerPlugin(NewInboxPlugin())
+	s.authorizationStore = &mutableAuthorizationStore{}
 	return s
+}
+
+func identityWithPolicy(name string, roles ...string) Identity {
+	p := AuthorizationPolicy{IdentityName: name, Roles: roles}
+	return Identity{IdentityName: name, Principal: AuthenticatedPrincipal{IdentityName: name}, policySnapshot: &p, Scopes: []string{ScopeFull}}
+}
+
+func setCurrentPolicy(s *Server, id Identity) {
+	s.authorizationStore.(*mutableAuthorizationStore).policy = *id.policySnapshot
 }
 
 func TestIdentityCanWrite_RW(t *testing.T) {
 	s := grantTestServer()
-	id := Identity{IdentityName: "alfie", Grants: map[string]string{"alfie": "rw"}, Scopes: []string{ScopeFull}}
+	id := identityWithPolicy("alfie", "alfie-rw")
+	setCurrentPolicy(s, id)
 
 	if !s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/notes.md") {
 		t.Fatal("rw should write anywhere in its docset")
@@ -46,7 +58,8 @@ func TestIdentityCanWrite_RW(t *testing.T) {
 
 func TestIdentityCanWrite_RO(t *testing.T) {
 	s := grantTestServer()
-	id := Identity{IdentityName: "bob", Grants: map[string]string{"alfie": "ro"}, Scopes: []string{ScopeFull}}
+	id := identityWithPolicy("bob", "alfie-ro")
+	setCurrentPolicy(s, id)
 	if s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/notes.md") {
 		t.Fatal("ro must never write")
 	}
@@ -55,7 +68,8 @@ func TestIdentityCanWrite_RO(t *testing.T) {
 func TestIdentityCanWrite_Publish(t *testing.T) {
 	s := grantTestServer()
 	// miles holds publish on alfie: create/edit only within /alfie/inbox, no deletes.
-	id := Identity{IdentityName: "miles", Grants: map[string]string{"alfie": "publish"}, Scopes: []string{ScopeFull}}
+	id := identityWithPolicy("miles", "alfie-publish")
+	setCurrentPolicy(s, id)
 
 	if !s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/inbox/from-miles.md") {
 		t.Fatal("publish should write inside the inbox")
@@ -76,12 +90,15 @@ func TestIdentityCanWrite_Publish(t *testing.T) {
 
 func TestIdentityCanWrite_ScopeAndLockCeilings(t *testing.T) {
 	s := grantTestServer()
-	id := Identity{IdentityName: "alfie", Grants: map[string]string{"alfie": "rw"}, Scopes: []string{ScopeRead}}
+	id := identityWithPolicy("alfie", "alfie-rw")
+	setCurrentPolicy(s, id)
+	id.Scopes = []string{ScopeRead}
 	if s.identityCanWrite(id, vfs.ChangeActionWrite, "/alfie/notes.md") {
 		t.Fatal("a read-scoped token must not write even with an rw grant")
 	}
 
-	full := Identity{IdentityName: "alfie", Grants: map[string]string{"alfie": "rw"}, Scopes: []string{ScopeFull}}
+	full := identityWithPolicy("alfie", "alfie-rw")
+	setCurrentPolicy(s, full)
 	s.config.Readonly = true
 	if s.identityCanWrite(full, vfs.ChangeActionWrite, "/alfie/notes.md") {
 		t.Fatal("the global write lock must block all writes")
@@ -94,8 +111,7 @@ func TestValidateGrants(t *testing.T) {
 		authEnforced: true,
 		grants:       newGrantRegistry(), // only ro/rw
 		auth: &config.AuthConfig{
-			Docsets:    map[string]config.DocsetSpec{"alfie": {}},
-			Identities: []config.AuthIdentity{{Name: "miles", Docsets: map[string]string{"alfie": "publish"}}},
+			Docsets: map[string]config.DocsetSpec{"alfie": {Access: config.DocsetAccess{Allow: map[string]string{"writer": "publish"}}}},
 		},
 	}
 	if err := s.validateGrants(); err == nil {
@@ -210,11 +226,7 @@ func TestValidateGrants_RejectsAliasOverlappingMount(t *testing.T) {
 // routes into /docset/inbox/... where the publish grant actually permits writes.
 func TestSessionPublishTargets_ResolvesInboxPath(t *testing.T) {
 	s := grantTestServer()
-	id := Identity{
-		IdentityName: "miles",
-		Grants:       map[string]string{"alfie": "publish"},
-		Scopes:       []string{ScopeFull},
-	}
+	id := identityWithPolicy("miles", "alfie-publish")
 	targets := s.sessionPublishTargets(id)
 	if len(targets) != 1 {
 		t.Fatalf("want 1 publish target, got %d: %+v", len(targets), targets)
@@ -233,10 +245,11 @@ func TestSessionPublishTargets_ResolvesInboxPath(t *testing.T) {
 func TestGrantForPath_NestedDocsetOverridesAncestor(t *testing.T) {
 	s := grantTestServer()
 	// Add a root docset "/" alongside the existing /alfie and /miles docsets.
-	s.auth.Docsets["openlore"] = config.DocsetSpec{Paths: []config.PathMapping{{Source: "/", Display: "/"}}}
+	s.auth.Docsets["openlore"] = config.DocsetSpec{Paths: []config.PathMapping{{Source: "/", Display: "/"}}, Access: config.DocsetAccess{Allow: map[string]string{"root-rw": "rw"}}}
 
 	// Identity holds rw on the root docset only — no grant on /alfie.
-	id := Identity{IdentityName: "anon", Grants: map[string]string{"openlore": "rw"}, Scopes: []string{ScopeFull}}
+	id := identityWithPolicy("anon", "root-rw")
+	setCurrentPolicy(s, id)
 
 	// A root-level file is governed by the root docset → writable.
 	if !s.identityCanWrite(id, vfs.ChangeActionWrite, "/readme.md") {
