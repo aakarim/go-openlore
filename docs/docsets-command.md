@@ -117,9 +117,6 @@ In `NewServer`, when `!authEnforced` (no auth file), populate the empty policy:
 
 ```go
 paths := []config.PathMapping{{Source: "/", Display: "/"}}
-for _, f := range cfg.Folders { // fold folder mounts in
-    paths = append(paths, config.PathMapping{Source: "/" + f.Name, Display: "/" + f.Name})
-}
 s.auth.Docsets = map[string]config.DocsetSpec{"public": {Paths: paths}}
 s.auth.Lore    = map[string][]string{"default": {"public"}}
 ```

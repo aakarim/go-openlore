@@ -188,6 +188,13 @@ func (d *DirFS) insideDocset(clean string) bool {
 	if len(d.docsetRoots) == 0 {
 		return clean != "/"
 	}
+	// A nested docset root remains protected even when another docset (such as
+	// "/") contains it.
+	for _, root := range d.docsetRoots {
+		if clean == root {
+			return false
+		}
+	}
 	for _, root := range d.docsetRoots {
 		if root == "/" {
 			if clean != "/" {
@@ -224,18 +231,36 @@ func (d *DirFS) docsetRootFor(clean string) (string, bool) {
 		}
 		return "", false
 	}
+	best := ""
 	for _, root := range d.docsetRoots {
 		if root == "/" {
-			if clean != "/" {
-				return "/", true
+			if clean != "/" && best == "" {
+				best = "/"
 			}
 			continue
 		}
-		if strings.HasPrefix(clean, root+"/") {
-			return root, true
+		if strings.HasPrefix(clean, root+"/") && len(root) > len(best) {
+			best = root
 		}
 	}
-	return "", false
+	return best, best != ""
+}
+
+// materializeDir creates physical upper-layer scaffolding after an overlay has
+// already established that the virtual directory is valid and visible.
+func (d *DirFS) materializeDir(p string) error {
+	clean := vfs.CleanPath(p)
+	if isTrashPath(clean) || isIgnored(clean, d.files) {
+		return fmt.Errorf("access denied: %s", p)
+	}
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if !d.writeable {
+		return vfs.ErrReadOnly
+	}
+	d.commitMu.Lock()
+	defer d.commitMu.Unlock()
+	return os.MkdirAll(d.resolve(clean), 0o755)
 }
 
 // MkdirAll creates p and any missing ancestors (mkdir -p). The enclosing docset

@@ -14,9 +14,6 @@ type Option = config.Option
 // FilesConfig controls which files are served.
 type FilesConfig = config.FilesConfig
 
-// FolderConfig defines an additional named folder mount.
-type FolderConfig = config.FolderConfig
-
 // AuthConfig is loaded from auth.json.
 type AuthConfig = config.AuthConfig
 
@@ -48,6 +45,7 @@ var (
 	WithIgnorePatterns  = config.WithIgnorePatterns
 	WithLogger          = config.WithLogger
 	WithSkillsDir       = config.WithSkillsDir
+	WithWritableDir     = config.WithWritableDir
 	WithHTTPPort        = config.WithHTTPPort
 	WithMCPPath         = config.WithMCPPath
 	WithMCPEnabled      = config.WithMCPEnabled
