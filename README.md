@@ -203,23 +203,23 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 |---------|-------------|
 | `whoami` | Print your identity |
 | `lore` | Introspection dispatcher (run `lore` for subcommands) |
-| `lore docsets` | List the docsets you can access, their grant, paths, and attributes |
+| `lore docsets` | List the docsets you can access, their grants, paths, and attributes |
 | `lore meta` | Emit each document's frontmatter as NDJSON, cwd-scoped (see [Plugins](#plugins)) |
 
 `lore docsets` prints an aligned, greppable table:
 
 ```
 $ lore docsets
-DOCSET    GRANT    ATTRIBUTES   PATH             TARGET
-public    ro       -            /docs/public     -
-backend   rw       -            /docs/backend    -
-home      rw       home,inbox   /home/backend    -
-home      rw       alias        /backend         /home/backend
+DOCSET    GRANTS      ATTRIBUTES   PATH             TARGET
+public    ro          -            /docs/public     -
+backend   publish,rw  inbox        /docs/backend    -
+home      rw          home         /home/backend    -
+home      rw          alias        /backend         /home/backend
 ```
 
-- `GRANT` is the named grant you hold on the docset: `ro` (read the whole docset),
-  `rw` (read + write anywhere in it), or `publish` (read the whole docset, create/edit
-  only within its inbox, never delete).
+- `GRANTS` is the sorted set of grants contributed by your roles: `ro` (read
+  the whole docset), `rw` (read + write anywhere in it), or `publish` (read the
+  whole docset, create/edit only within its inbox, never delete).
 - `ATTRIBUTES` is a comma-joined set of tokens (`-` if none): `home` (your `$HOME`
   docset), `inbox` (the docset declares an inbox folder), or `alias` (this mount
   resolves to the canonical path in `TARGET`). Canonical rows always precede
@@ -332,10 +332,9 @@ Key properties:
 - **Read-only by default.** The substrate boots read-only; writes require
   `readonly: false` (or per-identity write scope). Embedded-docs binaries can
   never be made writable.
-- **Scoped per identity.** Every write is authorized against the identity's
-  per-docset grant — an `rw` grant writes anywhere in its docset, a `publish`
-  grant only within the docset's inbox — so agents sharing a docset can't write
-  each other's space.
+- **Scoped through RBAC.** Every write is authorized against current role
+  membership and the governing docset ACL. An `rw` grant writes anywhere in
+  its docset, while `publish` writes only within the docset's inbox.
 - **Compare-and-swap by default.** Overwrites are rejected (not silently
   clobbered) if the file changed since you read it (`write_conflict_policy: hash`,
   overridable to `last_write_wins`). Append and `patch` are always CAS.
@@ -770,29 +769,36 @@ Create a `lore.json` to control access per public key:
   "allow_keyless": true,
   "unknown_identity": "allow",
   "default_cwd": "/docs",
+  "roles": {
+    "backend": { "allow": { "capabilities": ["spawn"] } }
+  },
   "docsets": {
-    "public": { "paths": ["/docs/public"] },
+    "public": {
+      "paths": ["/docs/public"],
+      "access": { "allow": { "guest": "ro", "backend": "ro" } }
+    },
     "backend": {
       "paths": ["/docs/api", {"internal/specs": "/docs/specs"}],
-      "aliases": ["/api"]
+      "aliases": ["/api"],
+      "access": { "allow": { "backend": "rw" } }
     }
   },
-  "default": { "public": "ro" },
   "identities": [
     {
       "name": "backend-agent",
       "public_key": "ssh-ed25519 AAAA...",
-      "docsets": { "public": "ro", "backend": "rw" },
+      "roles": ["backend"],
       "home": "backend"
     }
   ]
 }
 ```
 
-Each identity holds a named **grant** on each docset it can access — `ro`
-(read), `rw` (read + write), or `publish` (read all, create/edit only in the
-docset's inbox, no deletes). The `default` map is the grant set for keyless /
-unrecognized callers.
+Docsets grant exact role names `ro`, `rw`, or plugin grant types such as
+`publish`. Multiple roles contribute grants independently; any matching docset
+deny wins. Capability allows union across roles and any deny wins. Keyless and
+unknown allowed callers use the built-in `guest` role, which may only receive
+read-only grants.
 
 ### Path Aliases
 
@@ -819,7 +825,7 @@ rewritten to their canonical target before authorization.
 
 ### Home Directory
 
-An identity can name one of its granted docsets as its `home`. That docset's
+An identity can name a unique docset as its `home`. That docset's
 display path becomes the session's `$HOME`, enabling `~` and `~/path` expansion
 and letting `cd` with no arguments jump home. The session still starts in the
 default working directory (`default_cwd`) — `home` only sets `$HOME`, not where
@@ -829,7 +835,7 @@ you land on connect:
 {
   "name": "backend-agent",
   "public_key": "ssh-ed25519 AAAA...",
-  "docsets": { "public": "ro", "backend-home": "rw" },
+  "roles": ["backend"],
   "home": "backend-home"
 }
 ```
@@ -840,8 +846,8 @@ ssh -p 2222 server "cat ~/notes.md"
 ssh -p 2222 server "cd && pwd"    # -> /home/backend
 ```
 
-The `home` docset must be one of the identity's granted docsets. Give it an
-`inbox` (with an `rw` grant) to hand each agent its own writable personal space.
+The owner receives implicit `rw` on its home without an access entry. Nested
+docsets remain separate boundaries and do not inherit that implicit access.
 
 ### Managing Identities
 
@@ -849,8 +855,7 @@ The `home` docset must be one of the identity's granted docsets. Give it an
 openlore identity add \
   --name my-agent \
   --key "ssh-ed25519 AAAA..." \
-  --docset backend \
-  --grant rw \
+  --role backend \
   --home backend \
   --auth ./lore.json
 ```
@@ -858,10 +863,14 @@ openlore identity add \
 The `--key` flag is optional: an identity can exist as a passkey/token-only
 login target with no SSH key.
 
+Role policy is managed with `openlore role add|remove`, `role grant|revoke`,
+`role deny|undeny`, and `role capability allow|deny|remove`. Membership is
+managed with `openlore identity role add|remove --identity NAME --role ROLE`.
+
 ### Unknown Identity Handling
 
 In `lore.json`:
-- `"unknown_identity": "allow"` (default) — unrecognized keys get the `default` grant map
+- `"unknown_identity": "allow"` (default) — unrecognized keys resolve as `guest`
 - `"unknown_identity": "deny"` — reject unrecognized keys
 
 ## HTTP Front Page

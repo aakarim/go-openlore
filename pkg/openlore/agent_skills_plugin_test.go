@@ -148,18 +148,29 @@ func TestAgentSkillsMetaCanonicalizesAliases(t *testing.T) {
 
 func TestSessionMetaFiltersRequireGrantOnFilterDocset(t *testing.T) {
 	docsets := map[string]config.DocsetSpec{
-		"skills": {Paths: []config.PathMapping{{Source: "/skills", Display: "/skills"}}, AgentSkills: true},
-		"nested": {Paths: []config.PathMapping{{Source: "/skills/team", Display: "/skills/team"}}},
+		"skills": {
+			Paths:       []config.PathMapping{{Source: "/skills", Display: "/skills"}},
+			Access:      config.DocsetAccess{Allow: map[string]string{"skills": "ro"}},
+			AgentSkills: true,
+		},
+		"nested": {
+			Paths:  []config.PathMapping{{Source: "/skills/team", Display: "/skills/team"}},
+			Access: config.DocsetAccess{Allow: map[string]string{"nested": "ro"}},
+		},
 	}
-	s := &Server{auth: &config.AuthConfig{Docsets: docsets}, grants: newGrantRegistry()}
+	s := &Server{
+		auth:         &config.AuthConfig{Docsets: docsets, Roles: map[string]config.RoleSpec{"skills": {}, "nested": {}}},
+		authEnforced: true,
+		grants:       newGrantRegistry(),
+	}
 	p := newAgentSkills(docsets, failingReadFS{err: os.ErrNotExist}, s.canonicalPath, slog.Default())
 	if err := s.registerPlugin(p); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.sessionMetaFilters(Identity{Grants: map[string]string{"nested": "ro"}}); len(got) != 0 {
+	if got := s.sessionMetaFilters(identityWithPolicy("agent", "nested")); len(got) != 0 {
 		t.Fatalf("nested ordinary grant exposed ancestor filter: %+v", got)
 	}
-	got := s.sessionMetaFilters(Identity{Grants: map[string]string{"skills": "ro"}})
+	got := s.sessionMetaFilters(identityWithPolicy("agent", "skills"))
 	if len(got) != 1 || len(got[0].Roots) != 1 || got[0].Roots[0] != "/skills" {
 		t.Fatalf("direct skills grant did not bind filter: %+v", got)
 	}
@@ -170,16 +181,17 @@ func TestSessionDocsetsMarksAgentSkillsCanonicalAndAliasRows(t *testing.T) {
 		"skills": {
 			Paths:       []config.PathMapping{{Source: "/skills", Display: "/skills"}},
 			Aliases:     []string{"/agent-skills"},
+			Access:      config.DocsetAccess{Allow: map[string]string{"reader": "ro"}},
 			AgentSkills: true,
 		},
 	}
 	s := &Server{
-		auth:         &config.AuthConfig{Docsets: docsets},
+		auth:         &config.AuthConfig{Docsets: docsets, Roles: map[string]config.RoleSpec{"reader": {}}},
 		grants:       newGrantRegistry(),
 		authEnforced: true,
 		config:       config.Config{Readonly: true},
 	}
-	rows := s.sessionDocsets(Identity{Grants: map[string]string{"skills": "ro"}})
+	rows := s.sessionDocsets(identityWithPolicy("agent", "reader"))
 	if len(rows) != 2 || !rows[0].AgentSkills || !rows[1].AgentSkills {
 		t.Fatalf("agent skills attributes missing from canonical/alias rows: %+v", rows)
 	}

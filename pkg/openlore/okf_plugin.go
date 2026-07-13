@@ -7,8 +7,8 @@ import (
 	"path"
 
 	"github.com/aakarim/go-openlore/internal/config"
-	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/okf"
+	"github.com/aakarim/go-openlore/pkg/openlore/meta"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -24,7 +24,7 @@ import (
 // a global block, so OKF scoping reads the exact same display roots as authz and
 // can't drift from it. A write is governed by the OKF config of the docset that
 // owns its target path — the longest matching display root across all docsets,
-// exactly as grantForPath resolves grants. A child docset therefore includes a
+// exactly as grantsForPath resolves grants. A child docset therefore includes a
 // subtree (child carries OKF) or exempts it (child carries none, shadowing a
 // parent's OKF).
 //

@@ -55,4 +55,5 @@ var (
 	WithPasskeys        = config.WithPasskeys
 	WithReadonly        = config.WithReadonly
 	LoadAuthConfig      = config.LoadAuthConfig
+	ValidateAuthConfig  = config.ValidateAuthConfig
 )

@@ -45,8 +45,8 @@ type CmdContext interface {
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session
-// view surfaced by `lore docsets` — the host resolves it from the identity's
-// grants at session creation.
+// view surfaced by `lore docsets` — the host resolves it from the session's
+// role-policy snapshot.
 type DocsetInfo struct {
 	// Name is the docset's logical name (its key in the auth config).
 	Name string
@@ -56,8 +56,10 @@ type DocsetInfo struct {
 	// AliasTarget is the canonical display path when this row represents an
 	// alias. Empty means the row is canonical.
 	AliasTarget string
-	// Grant is the grant name the session holds on this docset (ro/rw/publish).
+	// Grant is retained for standalone callers that provide one grant directly.
 	Grant string
+	// Grants are the effective grants contributed by the session's roles.
+	Grants []string
 	// Writable reports whether this session may write to the docset directly
 	// with the normal write verbs. This is the FS-authoritative answer.
 	Writable bool
