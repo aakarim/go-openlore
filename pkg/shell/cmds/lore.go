@@ -97,6 +97,9 @@ func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, 
 		if d.Inbox {
 			attrs = append(attrs, "inbox")
 		}
+		if d.AgentSkills {
+			attrs = append(attrs, "agent-skills")
+		}
 		if d.AliasTarget != "" {
 			attrs = append(attrs, "alias")
 		}

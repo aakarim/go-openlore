@@ -23,3 +23,5 @@ type CommandProvider interface {
 type MetaExtenderProvider interface {
 	MetaExtenders() []meta.Extender
 }
+
+type MetaFilterProvider interface{ MetaFilters() []meta.Filter }

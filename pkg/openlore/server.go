@@ -85,6 +85,7 @@ type Server struct {
 	// metaExtenders are the `lore meta` extenders contributed by plugins,
 	// installed per session in buildSessionShell.
 	metaExtenders []meta.Extender
+	metaFilters   []meta.Filter
 
 	// postCommitMW is the post-commit middleware contributed by plugins, run at
 	// the applier after a durable commit (feed emit, post_write hooks) in
@@ -157,16 +158,15 @@ func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...c
 		motd:    cfg.MOTD,
 	}
 
-	// Built-in shellexec plugin: external commands as middleware on the
-	// read/write paths (pre_read, pre_commit, post_write). Registered here,
-	// before the write log is built, so its post-commit middleware is composed
-	// into the applier's chain.
+	// Construct shellexec now, but register built-ins after auth/docsets are
+	// loaded so Agent Skills admission can be the outermost write middleware.
+	var shellPlugin *shellexecPlugin
 	if !cfg.Shellexec.IsEmpty() {
 		plug, err := newShellexec(cfg.Shellexec, cfg.DataDir, ShellRunner{}, logger)
 		if err != nil {
 			return nil, fmt.Errorf("configuring shellexec plugin: %w", err)
 		}
-		s.registerPlugin(plug)
+		shellPlugin = plug
 	}
 
 	// Load auth config
@@ -216,8 +216,22 @@ func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...c
 	// write log is built — because it resolves the effective OKF config per write
 	// from the docset that owns the target path. Only registered when at least
 	// one docset carries OKF config.
+	var agentSkills *agentSkillsPlugin
+	if anyDocsetHasAgentSkills(s.auth.Docsets) {
+		agentSkills = newAgentSkills(s.auth.Docsets, s.merge, s.canonicalPath, logger)
+		if err := s.registerPlugin(agentSkills); err != nil {
+			return nil, err
+		}
+	}
 	if anyDocsetHasOKF(s.auth.Docsets) {
-		s.registerPlugin(newOKF(s.auth.Docsets, logger))
+		if err := s.registerPlugin(newOKF(s.auth.Docsets, logger)); err != nil {
+			return nil, err
+		}
+	}
+	if shellPlugin != nil {
+		if err := s.registerPlugin(shellPlugin); err != nil {
+			return nil, err
+		}
 	}
 
 	// Set up root directory. A caller-supplied rootFS wins (installed before the
@@ -256,6 +270,9 @@ func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...c
 		// so it is the sole writer and gives globally ordered writes/removes. The
 		// applier runs the post-commit chain after each durable commit.
 		s.writeLog = newWriteLog(s.merge, s.postCommitChain(), logger, 0)
+		if agentSkills != nil {
+			s.writeLog.SetPreApply(agentSkills.validateMutation)
+		}
 
 		// Async external work (Part D): the `spawn` command runs a command in a
 		// bounded goroutine and writes its stdout back through the captured
@@ -622,11 +639,14 @@ func (s *Server) shellHandler(next ssh.Handler) ssh.Handler {
 // post-commit provider registered after construction still fires on commits.
 //
 // Call it before serving; it is not safe to call concurrently with live traffic.
-func (s *Server) RegisterPlugin(p any) {
-	s.registerPlugin(p)
+func (s *Server) RegisterPlugin(p any) error {
+	if err := s.registerPlugin(p); err != nil {
+		return err
+	}
 	if s.writeLog != nil {
 		s.writeLog.SetPostCommit(s.postCommitChain())
 	}
+	return nil
 }
 
 // CommitChangeSet appends an already-authorized ChangeSet directly to the ordered
@@ -663,7 +683,24 @@ func (s *Server) canonicalChangeSet(cs vfs.ChangeSet) vfs.ChangeSet {
 // NewServer before the write log is built: read/write middleware are read
 // per-session at buildSessionShell time, but the post-commit chain is composed
 // once when newWriteLog is constructed.
-func (s *Server) registerPlugin(p any) {
+func (s *Server) registerPlugin(p any) error {
+	if fp, ok := p.(MetaFilterProvider); ok {
+		claimed := map[string]bool{}
+		for _, existing := range s.metaFilters {
+			claimed[existing.Name] = true
+			for _, alias := range existing.Aliases {
+				claimed[alias] = true
+			}
+		}
+		for _, f := range fp.MetaFilters() {
+			for _, name := range append([]string{f.Name}, f.Aliases...) {
+				if name == "" || claimed[name] {
+					return fmt.Errorf("metadata filter name or alias %q is already registered", name)
+				}
+				claimed[name] = true
+			}
+		}
+	}
 	if wp, ok := p.(WriteMiddlewareProvider); ok {
 		s.writeMW = append(s.writeMW, wp.WriteMiddleware()...)
 	}
@@ -686,6 +723,9 @@ func (s *Server) registerPlugin(p any) {
 	if mp, ok := p.(MetaExtenderProvider); ok {
 		s.metaExtenders = append(s.metaExtenders, mp.MetaExtenders()...)
 	}
+	if fp, ok := p.(MetaFilterProvider); ok {
+		s.metaFilters = append(s.metaFilters, fp.MetaFilters()...)
+	}
 	// Record the plugin's identity + version in the boot logs. Logged per
 	// registration so it captures plugins registered after NewServer (e.g. the
 	// inbox plugin, wired by the CLI via RegisterPlugin) too.
@@ -693,6 +733,7 @@ func (s *Server) registerPlugin(p any) {
 		info := ip.Info()
 		s.logger.Info("plugin registered", "name", info.Name, "version", info.Version)
 	}
+	return nil
 }
 
 // writeChain composes the admission (pre-commit) middleware around a terminal
@@ -858,6 +899,7 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	// Per-session docset views for `lore docsets` and publish inboxes for
 	// `publish`. Computed once here, where the access authority lives.
 	sh.SetDocsets(s.sessionDocsets(id))
+	sh.SetMetaFilters(s.sessionMetaFilters(id))
 	sh.SetPublishTargets(s.sessionPublishTargets(id))
 	sh.SetMetaExtenders(s.metaExtenders)
 
@@ -897,12 +939,13 @@ func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 		}
 		for i, pm := range ds.Paths {
 			out = append(out, cmds.DocsetInfo{
-				Name:     name,
-				Paths:    []string{displayPath(pm)},
-				Grant:    grantName,
-				Writable: writable[name],
-				Home:     i == 0 && name == id.HomeDocset,
-				Inbox:    inboxPath(ds) != "",
+				Name:        name,
+				Paths:       []string{displayPath(pm)},
+				Grant:       grantName,
+				Writable:    writable[name],
+				Home:        i == 0 && name == id.HomeDocset,
+				Inbox:       inboxPath(ds) != "",
+				AgentSkills: ds.AgentSkills,
 			})
 		}
 		target := primaryDisplayPath(ds)
@@ -913,10 +956,47 @@ func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 				AliasTarget: target,
 				Grant:       grantName,
 				Writable:    writable[name],
+				AgentSkills: ds.AgentSkills,
 			})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (s *Server) sessionMetaFilters(id Identity) []meta.Filter {
+	var out []meta.Filter
+	for _, f := range s.metaFilters {
+		nf := f
+		nf.Roots = nil
+		seen := map[string]bool{}
+		for docsetName, grantName := range id.Grants {
+			ds, ok := s.auth.Docsets[docsetName]
+			if !ok {
+				continue
+			}
+			grant, ok := s.grants.get(grantName)
+			if !ok {
+				continue
+			}
+			for _, pm := range ds.Paths {
+				docRoot := s.canonicalPath(displayPath(pm))
+				for _, providerRoot := range f.Roots {
+					providerRoot = s.canonicalPath(providerRoot)
+					// Filters are bound to docset roots, not merely intersecting
+					// descendants. A grant on a nested ordinary docset must not
+					// expose a filter contributed by its skills-enabled ancestor.
+					if providerRoot == docRoot && !seen[providerRoot] && grant.CanRead(ds, providerRoot) {
+						seen[providerRoot] = true
+						nf.Roots = append(nf.Roots, providerRoot)
+					}
+				}
+			}
+		}
+		if len(nf.Roots) > 0 {
+			out = append(out, nf)
+		}
+	}
 	return out
 }
 

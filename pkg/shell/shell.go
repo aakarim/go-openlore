@@ -37,6 +37,7 @@ type Shell struct {
 	// metaExtenders are the plugin-contributed extenders applied by `lore meta`,
 	// installed by the host per session. nil for a standalone shell.
 	metaExtenders []meta.Extender
+	metaFilters   []meta.Filter
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -102,6 +103,8 @@ func (s *Shell) SetMetaExtenders(e []meta.Extender) { s.metaExtenders = e }
 // MetaExtenders reports the per-session `lore meta` extenders. Implements
 // CmdContext.
 func (s *Shell) MetaExtenders() []meta.Extender { return s.metaExtenders }
+func (s *Shell) SetMetaFilters(f []meta.Filter) { s.metaFilters = f }
+func (s *Shell) MetaFilters() []meta.Filter     { return s.metaFilters }
 
 // --- CmdContext interface implementation ---
 
