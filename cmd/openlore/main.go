@@ -695,7 +695,10 @@ func main() {
 	// The inbox plugin contributes the `publish` grant (read whole docset, no
 	// deletes, create/edit only within the docset's inbox). Registered by
 	// default so lore.json may use `"grant": "publish"`.
-	srv.RegisterPlugin(openlore.NewInboxPlugin())
+	if err := srv.RegisterPlugin(openlore.NewInboxPlugin()); err != nil {
+		slog.Error("failed to register inbox plugin", "error", err)
+		os.Exit(1)
+	}
 
 	cmds.VersionString = assets.Version()
 

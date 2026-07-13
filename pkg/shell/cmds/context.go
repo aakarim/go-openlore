@@ -41,6 +41,7 @@ type CmdContext interface {
 	// meta` records. The host installs these once per session; a standalone
 	// shell returns nil.
 	MetaExtenders() []meta.Extender
+	MetaFilters() []meta.Filter
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session
@@ -67,7 +68,8 @@ type DocsetInfo struct {
 	// Inbox reports whether the docset declares an inbox folder (used by the
 	// publish grant). It says nothing about the inbox path or size — that lives
 	// in PublishTarget.
-	Inbox bool
+	Inbox       bool
+	AgentSkills bool
 }
 
 // PublishTarget is a writable inbox: its logical docset name (the first path

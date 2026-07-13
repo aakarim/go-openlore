@@ -84,7 +84,9 @@ func TestRegisterPlugin_WriteMiddlewareGatesLaterWrite(t *testing.T) {
 	s := newSeamServer(t, fs)
 
 	// Registered AFTER construction — must take effect on the composed chain.
-	s.RegisterPlugin(deferMWProvider{gatedPrefix: "/gated", ref: "held-1"})
+	if err := s.RegisterPlugin(deferMWProvider{gatedPrefix: "/gated", ref: "held-1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	chain := s.writeChain()
 
@@ -113,7 +115,9 @@ func TestRegisterPlugin_PostCommitFiresAfterConstruction(t *testing.T) {
 	s := newSeamServer(t, fs)
 
 	rec := &recordPostCommit{}
-	s.RegisterPlugin(rec) // post-commit provider registered after the log was built
+	if err := s.RegisterPlugin(rec); err != nil { // post-commit provider registered after the log was built
+		t.Fatal(err)
+	}
 
 	_, err := s.CommitChangeSet(context.Background(), Actor{ID: "alice", Extra: map[string]string{"approver": "bob"}}, writeCS("/x"))
 	if err != nil {
@@ -136,7 +140,9 @@ func TestCommitChangeSet_SkipsAdmission(t *testing.T) {
 	s := newSeamServer(t, fs)
 
 	// A middleware that defers EVERY write. Admission (writeChain) would park.
-	s.RegisterPlugin(deferMWProvider{gatedPrefix: "/", ref: "held"})
+	if err := s.RegisterPlugin(deferMWProvider{gatedPrefix: "/", ref: "held"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Sanity: admission defers.
 	if _, err := s.writeChain()(context.Background(), WriteOp{ChangeSet: writeCS("/x"), Actor: Actor{ID: "a"}}); err == nil {

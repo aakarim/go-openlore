@@ -49,6 +49,7 @@ type writeLog struct {
 
 	mu         sync.RWMutex      // guards closed + postCommit + serializes sends against Close
 	postCommit PostCommitHandler // optional; runs at the applier after a durable commit
+	preApply   func(vfs.ChangeSet) error
 	closed     bool
 	ch         chan logEntry
 
@@ -89,7 +90,17 @@ func newWriteLog(substrate vfs.WritableFS, postCommit PostCommitHandler, logger 
 func (l *writeLog) run() {
 	defer close(l.done)
 	for e := range l.ch {
-		h, err := vfs.CommitChangeSet(l.substrate, e.cs)
+		var h string
+		var err error
+		l.mu.RLock()
+		pre := l.preApply
+		l.mu.RUnlock()
+		if pre != nil {
+			err = pre(e.cs)
+		}
+		if err == nil {
+			h, err = vfs.CommitChangeSet(l.substrate, e.cs)
+		}
 		e.reply <- applyResult{hash: h, err: err}
 		if err != nil {
 			continue
@@ -105,6 +116,12 @@ func (l *writeLog) run() {
 				"target", e.cs.Target, "action", e.cs.Action, "err", perr)
 		}
 	}
+}
+
+func (l *writeLog) SetPreApply(h func(vfs.ChangeSet) error) {
+	l.mu.Lock()
+	l.preApply = h
+	l.mu.Unlock()
 }
 
 // SetPostCommit replaces the post-commit handler run by the applier after each

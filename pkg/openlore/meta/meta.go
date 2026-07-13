@@ -25,6 +25,15 @@ import (
 // agrees with write-side enforcement.
 type Extender func(absPath string, content []byte, frontmatter map[string]any) map[string]any
 
+// Filter is a plugin-provided, session-bound metadata query.
+type Filter struct {
+	Name          string
+	Aliases       []string
+	Roots         []string
+	AbsolutePaths bool
+	Selector      func(absPath string, record Record) bool
+}
+
 // Record is one scanned document: its path relative to the scan root and the
 // merged field map (frontmatter plus any extender-contributed fields). Path is
 // kept separate so callers decide how to surface it.

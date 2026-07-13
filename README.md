@@ -483,6 +483,36 @@ lore meta | jq -r 'select(.type=="Metric").path' | xargs cat # drill into metric
 Read-scoping comes for free: the walk goes through the session filesystem, so
 `lore meta` only ever sees what the identity can already read.
 
+**Agent Skills.** Setting `"agent_skills": true` on a docset treats every
+canonical path in that docset as an [Agent Skills](https://agentskills.io/)
+collection. Each immediate child directory is a skill and must contain an
+exactly named `SKILL.md` with valid Agent Skills frontmatter. Writes are checked
+both at admission and immediately before the serialized commit. To keep a
+parseable `SKILL.md` as ordinary documentation, set
+`metadata.agent_skill: disable`; aliases remain alternate spellings and are not
+scanned as additional collections.
+
+```json
+{
+  "docsets": {
+    "skills": {
+      "paths": ["/skills"],
+      "aliases": ["/agent-skills"],
+      "agent_skills": true
+    }
+  }
+}
+```
+
+Enabled, accessible collections can be queried without scanning unrelated
+documents. Results use absolute canonical mounted paths; the accepted filter
+names are `agent_skills`, `agent_skill`, `skills`, and `skill`:
+
+```bash
+lore meta --filter agent_skills
+lore meta --filter skills /skills/deploy
+```
+
 **OKF annotation.** When the okf plugin is active, it enriches `lore meta`
 records (via `MetaExtenderProvider`) with an `okf` field — but only for
 documents where OKF actually applies (the owning docset has `okf` and the path

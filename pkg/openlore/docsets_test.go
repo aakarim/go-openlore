@@ -43,7 +43,9 @@ func enforcedDocsetServer() *Server {
 		},
 	}
 	s.authorizationStore = fileAuthorizationStore{auth: s.auth}
-	s.registerPlugin(NewInboxPlugin())
+	if err := s.registerPlugin(NewInboxPlugin()); err != nil {
+		panic(err)
+	}
 	return s
 }
 

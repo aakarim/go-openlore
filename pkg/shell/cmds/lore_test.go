@@ -46,7 +46,7 @@ func TestLoreDocsets_Table(t *testing.T) {
 	docsets := []cmds.DocsetInfo{
 		{Name: "public", Paths: []string{"/docs/public"}, Grant: "ro"},
 		{Name: "public", Paths: []string{"/public"}, AliasTarget: "/docs/public", Grant: "ro"},
-		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Grant: "rw", Writable: true},
+		{Name: "backend", Paths: []string{"/docs/backend", "/docs/api"}, Grant: "rw", Writable: true, AgentSkills: true},
 		{Name: "home", Paths: []string{"/home/backend"}, Grant: "rw", Writable: true, Home: true, Inbox: true},
 	}
 	out, _, code := runLore(t, docsets, "lore docsets")
@@ -70,7 +70,7 @@ func TestLoreDocsets_Table(t *testing.T) {
 	}
 	assertRow(lines[1], "public", "ro", "-", "/docs/public", "-")
 	assertRow(lines[2], "public", "ro", "alias", "/public", "/docs/public")
-	assertRow(lines[3], "backend", "rw", "-", "/docs/backend,/docs/api", "-")
+	assertRow(lines[3], "backend", "rw", "agent-skills", "/docs/backend,/docs/api", "-")
 	assertRow(lines[4], "home", "rw", "home,inbox", "/home/backend", "-")
 }
 

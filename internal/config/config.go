@@ -217,6 +217,8 @@ type JWKSSpec struct {
 type DocsetSpec struct {
 	Paths  []PathMapping `json:"paths"`
 	Access DocsetAccess  `json:"access,omitempty"`
+	// AgentSkills treats each canonical path as an Agent Skills collection.
+	AgentSkills bool `json:"agent_skills,omitempty"`
 	// Aliases are alternate display roots for the first path. They expose the
 	// same content while the first path remains canonical for home, inbox,
 	// policy, hooks, and changesets.

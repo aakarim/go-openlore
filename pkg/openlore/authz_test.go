@@ -25,7 +25,9 @@ func grantTestServer() *Server {
 			},
 		},
 	}
-	s.registerPlugin(NewInboxPlugin())
+	if err := s.registerPlugin(NewInboxPlugin()); err != nil {
+		panic(err)
+	}
 	s.authorizationStore = &mutableAuthorizationStore{}
 	return s
 }
@@ -119,7 +121,9 @@ func TestValidateGrants(t *testing.T) {
 	}
 
 	// Register the inbox plugin → publish becomes valid.
-	s.registerPlugin(NewInboxPlugin())
+	if err := s.registerPlugin(NewInboxPlugin()); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.validateGrants(); err != nil {
 		t.Fatalf("publish should validate once the inbox plugin is registered: %v", err)
 	}
