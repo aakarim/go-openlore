@@ -9,6 +9,11 @@
 # Config file version. Used for migration between config formats.
 version: "1"
 
+# Optional disk-backed content root. When the binary includes embedded docs,
+# this directory is overlaid at the same virtual root: its filesystem hierarchy
+# defines paths, while lore.json independently defines docsets and access.
+# writable_dir: ./published
+
 # ── Server ────────────────────────────────────────────
 
 # SSH server port. Agents connect here.
@@ -179,14 +184,6 @@ files:
     - "*.pem"
     - "*.p12"
     - ".DS_Store"
-
-# Mount additional directories under named paths in the virtual filesystem.
-# Each folder appears as a top-level directory in the shell.
-# folders:
-#   - name: api-docs
-#     path: /var/docs/api
-#   - name: runbooks
-#     path: /var/docs/runbooks
 
 # ── Skills ────────────────────────────────────────────
 

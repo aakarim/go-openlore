@@ -23,6 +23,9 @@ type Config struct {
 	MOTD            string
 	AuthFile        string
 	SkillsDir       string
+	// WritableDir is the disk-backed content root layered over embedded docs.
+	// Its directory hierarchy is exposed directly at the virtual root.
+	WritableDir string
 	// DataDir is the server's writable control-plane data root. Distinct from
 	// docset content. Defaults to ./.openlore.
 	DataDir         string
@@ -41,7 +44,6 @@ type Config struct {
 	CAKeysFile   string
 	HostCertFile string
 	Files        FilesConfig
-	Folders      []FolderConfig
 	Passkeys     PasskeysConfig
 	// Shellexec is the external-command middleware config (pre_read, pre_commit,
 	// post_write) run by the built-in shellexec plugin. Replaces the legacy
@@ -155,12 +157,6 @@ type FilesConfig struct {
 	Allowed []string
 	Denied  []string
 	Ignore  []string
-}
-
-// FolderConfig defines an additional named folder mount.
-type FolderConfig struct {
-	Name string
-	Path string
 }
 
 // AuthConfig is loaded from lore.json.
@@ -317,6 +313,7 @@ type fileConfig struct {
 	MOTDFile            string           `yaml:"motd_file"`
 	AuthFile            string           `yaml:"auth_file"`
 	SkillsDir           string           `yaml:"skills_dir"`
+	WritableDir         string           `yaml:"writable_dir"`
 	DataDir             string           `yaml:"data_dir"`
 	HTTPPort            int              `yaml:"http_port"`
 	ExternalSSHPort     int              `yaml:"external_ssh_port"`
@@ -328,7 +325,6 @@ type fileConfig struct {
 	HostCertFile        string           `yaml:"host_cert_file"`
 	DefaultCwd          string           `yaml:"default_cwd"`
 	Files               *filesYAML       `yaml:"files"`
-	Folders             []FolderConfig   `yaml:"folders"`
 	Passkeys            *passkeysYAML    `yaml:"passkeys"`
 	Shellexec           *ShellexecConfig `yaml:"shellexec"`
 	Readonly            *bool            `yaml:"readonly"`
@@ -458,6 +454,9 @@ func WithConfigFile(path string) Option {
 		if fc.SkillsDir != "" {
 			cfg.SkillsDir = fc.SkillsDir
 		}
+		if fc.WritableDir != "" {
+			cfg.WritableDir = fc.WritableDir
+		}
 		if fc.DataDir != "" {
 			cfg.DataDir = fc.DataDir
 		}
@@ -492,9 +491,6 @@ func WithConfigFile(path string) Option {
 			if len(fc.Files.Ignore) > 0 {
 				cfg.Files.Ignore = fc.Files.Ignore
 			}
-		}
-		if len(fc.Folders) > 0 {
-			cfg.Folders = fc.Folders
 		}
 		if fc.Shellexec != nil {
 			cfg.Shellexec = *fc.Shellexec
@@ -570,6 +566,9 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 			if fc.SkillsDir != "" {
 				cfg.SkillsDir = fc.SkillsDir
 			}
+			if fc.WritableDir != "" {
+				cfg.WritableDir = fc.WritableDir
+			}
 			if fc.DataDir != "" {
 				cfg.DataDir = fc.DataDir
 			}
@@ -604,9 +603,6 @@ func WithEmbeddedConfig(data []byte, motdFallback string) Option {
 				if len(fc.Files.Ignore) > 0 {
 					cfg.Files.Ignore = fc.Files.Ignore
 				}
-			}
-			if len(fc.Folders) > 0 {
-				cfg.Folders = fc.Folders
 			}
 			if fc.Shellexec != nil {
 				cfg.Shellexec = *fc.Shellexec
@@ -742,6 +738,14 @@ func WithSkillsDir(dir string) Option {
 func WithDataDir(dir string) Option {
 	return func(cfg *Config) error {
 		cfg.DataDir = dir
+		return nil
+	}
+}
+
+// WithWritableDir sets the disk-backed content root layered over embedded docs.
+func WithWritableDir(dir string) Option {
+	return func(cfg *Config) error {
+		cfg.WritableDir = dir
 		return nil
 	}
 }

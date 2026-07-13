@@ -119,7 +119,9 @@ func main() {
 				config.WithConfigFile(*mcpConfig),
 				config.WithEmbeddedConfig(embeddedCfg, ""),
 			}
+			var resolvedCfg config.Config
 			if cfg, err := config.New(cfgOpts...); err == nil {
+				resolvedCfg = cfg
 				if len(files.Allowed) == 0 {
 					files.Allowed = cfg.Files.Allowed
 				}
@@ -138,7 +140,13 @@ func main() {
 				}
 				vfs = openlore.NewDirFS(absDir, files)
 			} else if loreFS := assets.Lore(); loreFS != nil {
-				vfs = openlore.NewFSAdapter(loreFS)
+				lower := openlore.NewFSAdapter(loreFS)
+				if resolvedCfg.WritableDir != "" {
+					upper := openlore.NewDirFS(resolvedCfg.WritableDir, files)
+					vfs = openlore.NewOverlayFS(upper, lower)
+				} else {
+					vfs = lower
+				}
 			} else {
 				fmt.Fprintln(os.Stderr, "error: no directory specified and no embedded docs found")
 				mcpCmd.Usage()
@@ -481,8 +489,16 @@ func main() {
 		opts = append(opts, openlore.WithReadonly(*readonly))
 	}
 
-	// Create server
-	srv, err := openlore.NewServer(rootDir, opts...)
+	// Create server. Embedded docs are installed as the lower layer during
+	// construction so a configured writable_dir can be the upper layer before
+	// the ordered write log is initialized.
+	var srv *openlore.Server
+	var err error
+	if rootDir == "" && assets.Lore() != nil {
+		srv, err = openlore.NewServerWithLowerFS(assets.Lore(), opts...)
+	} else {
+		srv, err = openlore.NewServer(rootDir, opts...)
+	}
 	if err != nil {
 		slog.Error("failed to create server", "error", err)
 		os.Exit(1)
@@ -494,13 +510,6 @@ func main() {
 	srv.RegisterPlugin(openlore.NewInboxPlugin())
 
 	cmds.VersionString = assets.Version()
-
-	// Mount embedded docs if present and no directory was given on the CLI
-	if rootDir == "" {
-		if loreFS := assets.Lore(); loreFS != nil {
-			srv.SetRootFS(loreFS)
-		}
-	}
 
 	cfg := srv.Config()
 

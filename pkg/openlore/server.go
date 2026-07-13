@@ -110,7 +110,7 @@ type Server struct {
 // rootDir is the primary directory to serve (can be empty if using Mount).
 // Options are applied using the functional options pattern via config.Option.
 func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
-	return newServerWithRoot(rootDir, nil, opts...)
+	return newServerWithRoot(rootDir, nil, nil, opts...)
 }
 
 // NewServerWithRootFS creates a server whose root filesystem is a caller-supplied
@@ -120,14 +120,21 @@ func NewServer(rootDir string, opts ...config.Option) (*Server, error) {
 // SetRootBashFS runs after SetWriteable()/newWriteLog and would leave the log
 // with no writable backend at construction time.
 func NewServerWithRootFS(root vfs.FileSystem, opts ...config.Option) (*Server, error) {
-	return newServerWithRoot("", root, opts...)
+	return newServerWithRoot("", root, nil, opts...)
+}
+
+// NewServerWithLowerFS creates a server with a read-only lower filesystem.
+// When writable_dir is configured, its disk tree is layered over lower at the
+// same virtual root and receives all writes.
+func NewServerWithLowerFS(lower fs.FS, opts ...config.Option) (*Server, error) {
+	return newServerWithRoot("", nil, NewFSAdapter(lower), opts...)
 }
 
 // newServerWithRoot is the shared constructor. When rootFS is non-nil it becomes
 // the merge root (rootDir is ignored); otherwise rootDir (if non-empty) is served
 // via a DirFS. The root is installed before the writable block so the write log's
 // substrate is live at construction.
-func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Option) (*Server, error) {
+func newServerWithRoot(rootDir string, rootFS, lowerFS vfs.FileSystem, opts ...config.Option) (*Server, error) {
 	cfg, err := config.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -183,14 +190,11 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 		}
 	} else {
 		// No auth file: run in trusted/unenforced mode as a single `public`
-		// docset rooted at "/", with any folder mounts folded in. The anonymous
-		// identity holds an `rw` grant on it (see anonymousIdentity), so every
-		// consumer reuses the normal docset machinery.
-		paths := []config.PathMapping{{Source: "/", Display: "/"}}
-		for _, f := range cfg.Folders {
-			paths = append(paths, config.PathMapping{Source: "/" + f.Name, Display: "/" + f.Name})
-		}
-		s.auth.Docsets = map[string]config.DocsetSpec{"public": {Paths: paths}}
+		// docset rooted at "/". The anonymous identity holds an `rw` grant on it
+		// (see anonymousIdentity), so every consumer reuses normal docset scoping.
+		s.auth.Docsets = map[string]config.DocsetSpec{"public": {
+			Paths: []config.PathMapping{{Source: "/", Display: "/"}},
+		}}
 	}
 
 	// Collect docset root display paths so DirFS.Mkdir can enforce the
@@ -224,13 +228,19 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 	} else if rootDir != "" {
 		dirFS := NewDirFS(rootDir, cfg.Files).WithDocsetRoots(docsetRoots)
 		s.merge.SetRoot(dirFS)
-	}
-
-	// Set up additional folders. Each folder mount is itself a docset, so any
-	// non-root path within it is a valid Mkdir target (default boundary).
-	for _, folder := range cfg.Folders {
-		folderFS := NewDirFS(folder.Path, cfg.Files)
-		s.merge.Mount(folder.Name, folderFS)
+	} else if cfg.WritableDir != "" {
+		info, err := os.Stat(cfg.WritableDir)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("writable_dir %q is not a directory", cfg.WritableDir)
+		}
+		upper := NewDirFS(cfg.WritableDir, cfg.Files).WithDocsetRoots(docsetRoots)
+		if lowerFS != nil {
+			s.merge.SetRoot(NewOverlayFS(upper, lowerFS))
+		} else {
+			s.merge.SetRoot(upper)
+		}
+	} else if lowerFS != nil {
+		s.merge.SetRoot(lowerFS)
 	}
 
 	// Enable the experimental writable substrate when the global lock is open.
