@@ -306,7 +306,9 @@ func TestRegisterPlugin_WiresOKFIntoLoreMeta(t *testing.T) {
 		"wiki": docset("/wiki", &config.OKFDocsetConfig{}),
 	}
 	s := &Server{grants: newGrantRegistry()}
-	s.registerPlugin(newOKF(docsets, nil)) // must collect the meta extender
+	if err := s.registerPlugin(newOKF(docsets, nil)); err != nil { // must collect the meta extender
+		t.Fatal(err)
+	}
 
 	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
 	sh.SetMetaExtenders(s.metaExtenders)

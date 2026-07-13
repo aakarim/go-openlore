@@ -140,6 +140,7 @@ func runMetaFilter(ctx CmdContext, name, narrow string, pathSet bool, w, errW io
 			}
 			obj["path"] = resultPath
 			if err := enc.Encode(obj); err != nil {
+				fmt.Fprintf(errW, "lore meta: %s\n", err)
 				return 1
 			}
 		}

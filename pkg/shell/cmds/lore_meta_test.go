@@ -3,6 +3,7 @@ package cmds_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -166,6 +167,28 @@ func TestLoreMetaFilterExactFilePath(t *testing.T) {
 	recs := parseNDJSON(t, out)
 	if len(recs) != 1 || recs[0]["path"] != "/docs/metric.md" {
 		t.Fatalf("exact-file filtered result = %v", recs)
+	}
+}
+
+type errorWriter struct{ err error }
+
+func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestLoreMetaFilterReportsEncodingFailure(t *testing.T) {
+	sh := shell.NewShell(metaTreeFS())
+	sh.SetMetaFilters([]meta.Filter{{
+		Name:     "all",
+		Roots:    []string{"/docs"},
+		Selector: func(string, meta.Record) bool { return true },
+	}})
+	var errOut bytes.Buffer
+	writeErr := errors.New("output unavailable")
+	code := sh.ExecPipeline("lore meta --filter all", errorWriter{err: writeErr}, &errOut, nil)
+	if code != 1 {
+		t.Fatalf("exit=%d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), writeErr.Error()) {
+		t.Fatalf("stderr missing encoding error: %q", errOut.String())
 	}
 }
 
