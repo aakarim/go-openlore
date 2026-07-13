@@ -141,6 +141,13 @@ func TestValidateGrants_Aliases(t *testing.T) {
 			},
 		},
 		{
+			name: "valid beneath canonical ancestor",
+			docsets: map[string]config.DocsetSpec{
+				"openlore": {Paths: []config.PathMapping{{Source: "/"}}},
+				"jared":    {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{"/jared"}},
+			},
+		},
+		{
 			name:    "without canonical path",
 			docsets: map[string]config.DocsetSpec{"jared": {Aliases: []string{"/jared"}}},
 			wantErr: true,
