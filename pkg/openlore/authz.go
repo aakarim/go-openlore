@@ -57,6 +57,7 @@ func (s *Server) validateGrants() error {
 		docset string
 		path   string
 		alias  bool
+		mount  bool
 	}
 	var roots []rootSpec
 	for name, ds := range s.auth.Docsets {
@@ -79,7 +80,7 @@ func (s *Server) validateGrants() error {
 	}
 	if s.merge != nil {
 		for _, mount := range s.merge.mountPaths() {
-			roots = append(roots, rootSpec{docset: "<mount>", path: mount})
+			roots = append(roots, rootSpec{docset: "<mount>", path: mount, mount: true})
 		}
 	}
 	for i, candidate := range roots {
@@ -90,13 +91,25 @@ func (s *Server) validateGrants() error {
 			if i == j {
 				continue
 			}
-			if pathWithinRoot(candidate.path, other.path) || pathWithinRoot(other.path, candidate.path) {
-				kind := "canonical path"
-				if other.alias {
-					kind = "alias"
-				}
-				return fmt.Errorf("auth config: docset %q alias %q overlaps docset %q %s %q", candidate.docset, candidate.path, other.docset, kind, other.path)
+			overlaps := pathWithinRoot(candidate.path, other.path) || pathWithinRoot(other.path, candidate.path)
+			if !overlaps {
+				continue
 			}
+			// A broad canonical docset may contain an alias. Alias requests are
+			// rewritten before scope and authorization, so the target's more-
+			// specific boundary still governs them. The reverse remains unsafe:
+			// an alias containing a canonical root would shadow that boundary.
+			strictCanonicalAncestor := !other.alias && !other.mount && other.path != candidate.path && pathWithinRoot(other.path, candidate.path)
+			if strictCanonicalAncestor {
+				continue
+			}
+			kind := "canonical path"
+			if other.alias {
+				kind = "alias"
+			} else if other.mount {
+				kind = "mount"
+			}
+			return fmt.Errorf("auth config: docset %q alias %q overlaps docset %q %s %q", candidate.docset, candidate.path, other.docset, kind, other.path)
 		}
 	}
 	return nil

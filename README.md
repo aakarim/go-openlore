@@ -783,7 +783,9 @@ Both `/agent/jared/notes.md` and `/jared/notes.md` access the same file. Shell
 navigation preserves the path the caller used, but authorization, approvals,
 changesets, hooks, events, inboxes, and `$HOME` use `/agent/jared` as the
 canonical identity. Aliases must be absolute, normalized, and must not overlap
-another canonical path or alias.
+another alias, mount, or canonical path at or beneath the alias. A broad
+canonical ancestor such as `/` may contain an alias because alias requests are
+rewritten to their canonical target before authorization.
 
 ### Home Directory
 
