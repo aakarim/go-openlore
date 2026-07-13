@@ -7,6 +7,8 @@
 
   "//grants": "An identity holds a named GRANT on each docset it can access. Core grants: `ro` (read the whole docset) and `rw` (read + write anywhere in the docset). The inbox plugin adds `publish` (read the whole docset, no deletes, create/edit only within the docset's `inbox` folder). A grant name with no registered handler makes the server refuse to start.",
 
+  "//okf": "Add an `okf` block to a docset to validate Open Knowledge Format documents on write across that docset's subtree. `patterns` (default [\"*.md\"]) are basename globs; `enforce` (default true) rejects non-conformant writes (false = log and allow). A write is governed by the OKF config of the docset that OWNS its path (longest matching display root, same as grants). Scope narrower subtrees with nested docsets: `personal` below has no okf, but the nested `personal-wiki` docset enforces OKF only under /home/personal/wiki without re-declaring any grants (writes still authorize through the parent's grant).",
+
   "docsets": {
     "public": {
       "paths": [
@@ -43,6 +45,30 @@
         {"internal/runbooks/on-call.md": "/docs/runbooks/on-call.md"},
         "/docs/deployment"
       ]
+    },
+    "wiki": {
+      "//": "OKF enforced across this whole docset: any *.md write must be a conformant OKF concept (parseable YAML frontmatter with a non-empty `type`), else it is rejected before it hits disk.",
+      "paths": [
+        "/docs/wiki"
+      ],
+      "okf": {
+        "patterns": ["*.md"],
+        "enforce": true
+      }
+    },
+    "personal": {
+      "//": "No okf here: writes anywhere under /home/personal are unvalidated…",
+      "paths": [
+        {"published/personal": "/home/personal"}
+      ],
+      "inbox": "inbox"
+    },
+    "personal-wiki": {
+      "//": "…except this nested docset, which owns /home/personal/wiki (longer matching root) and enforces OKF only there. It carries no grants, so it does not change who can write — writes still authorize through the parent `personal` grant; it only attaches OKF to the subtree.",
+      "paths": [
+        {"published/personal/wiki": "/home/personal/wiki"}
+      ],
+      "okf": {}
     }
   },
 

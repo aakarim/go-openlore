@@ -204,6 +204,7 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 | `whoami` | Print your identity |
 | `lore` | Introspection dispatcher (run `lore` for subcommands) |
 | `lore docsets` | List the docsets you can access, their grant, paths, and attributes |
+| `lore meta` | Emit each document's frontmatter as NDJSON, cwd-scoped (see [Plugins](#plugins)) |
 
 `lore docsets` prints an aligned, greppable table:
 
@@ -368,6 +369,128 @@ For the full design and internals — the layered session filesystem, the single
 write seam, preconditions, approvals, events/hooks, and async jobs — see
 [`docs/write-system.md`](docs/write-system.md). Connected agents can read the
 user-facing guide with `cat /writes.md`.
+
+## Plugins
+
+OpenLore's write/read paths and command surface are extensible via **plugins** —
+Go values registered with the server that are capability-detected at
+registration. A plugin implements one or more provider interfaces:
+
+| Interface | Contributes |
+|---|---|
+| `WriteMiddlewareProvider` | admission (pre-commit) middleware |
+| `ReadMiddlewareProvider` | before-read middleware |
+| `PostCommitProvider` | post-commit middleware |
+| `GrantTypeProvider` | named grant types (e.g. `publish`) |
+| `CommandProvider` | `lore` subcommands (`LoreCommands() []cmds.LoreSub`) |
+| `MetaExtenderProvider` | fields added to `lore meta` records |
+| `PluginInfoProvider` | plugin name + version (`Info() PluginInfo`), logged at boot |
+
+Built-in plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers
+add their own via `Server.RegisterPlugin`. A plugin can extend the introspection
+surface without the `lore` dispatcher knowing about it: `CommandProvider` adds
+whole subcommands, and `MetaExtenderProvider` enriches an existing command's
+output (the okf plugin uses it to annotate `lore meta` — see below).
+
+Every built-in plugin reports a name and semantic version via
+`PluginInfoProvider`, recorded in the server's boot logs as it registers, so it
+is always clear which plugins — and which versions — are active:
+
+```
+INFO plugin registered name=shellexec version=1.0.0
+INFO plugin registered name=okf version=0.1.0
+INFO plugin registered name=inbox version=1.0.0
+```
+
+The `okf` version tracks the OKF spec revision it validates (OKF v0.1).
+
+### OKF Validator
+
+The built-in **Open Knowledge Format** plugin validates knowledge documents on
+write against [OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
+OKF is a directory of markdown files with YAML frontmatter; a document is
+conformant when every non-reserved `.md` file opens with a parseable frontmatter
+block containing a non-empty `type` field. Reserved files (`index.md`,
+`log.md`) are validated leniently.
+
+Enable it **per docset** in `lore.json` by adding an `okf` block to a docset —
+so OKF scoping reads the same display roots as the docset's paths and grants and
+can never drift from them. It runs as pre-commit admission middleware, so a
+non-conformant write to that docset's subtree (via `>`, `tee`, `patch`, `sed
+-i`, `publish`, `spawn`, or any verb funneling through the write log) is
+**rejected before it hits disk**:
+
+```json
+{
+  "docsets": {
+    "wiki": {
+      "paths": ["/wiki"],
+      "okf": {
+        "patterns": ["*.md"],
+        "enforce": true
+      }
+    }
+  }
+}
+```
+
+A write is governed by the OKF config of the docset that **owns** its target
+path — the longest matching display root, exactly as grants resolve. Scope
+narrower subtrees with **nested docsets**: a child docset that carries `okf`
+adds validation to that subtree; a child docset without `okf` shadows a parent's
+OKF and exempts that subtree. For example, make `/adil` a docset with no `okf`
+and `/adil/wiki` a nested docset with `okf` to enforce OKF only under
+`/adil/wiki` while leaving the rest of `/adil` untouched. `patterns` defaults to
+`["*.md"]` and `enforce` defaults to `true` (set `false` to log and allow).
+
+The same validation logic is a dependency-light library at
+[`pkg/okf`](pkg/okf), so downstream tooling (e.g. a `kb save`/`kb publish`
+command) can import `okf.Validate` / `okf.ParseFrontmatter` and enforce
+identical conformance without going through the write path:
+
+```go
+import "github.com/aakarim/go-openlore/pkg/okf"
+
+if err := okf.Validate(path, content); err != nil {
+    // not OKF-conformant
+}
+```
+
+### `lore meta` — frontmatter reader
+
+`lore meta` is a read-side, cwd-scoped introspection command on the `lore`
+dispatcher. It walks documents from the current directory (or an optional path
+argument, like `find [path]`) and emits **each document's YAML frontmatter as
+NDJSON** — one JSON object per line, `path` relative to where you are. It is a
+generic *reader*, not a validator: it emits any `*.md` that opens with a
+parseable frontmatter block (skipping those that don't) and passes through the
+full frontmatter map, so `jq` can reach any producer-defined field. Bodies stay
+out — that's the token win; use `cat`/`grep` to drill in.
+
+```bash
+cd backend
+lore meta                                                    # frontmatter for backend/**
+lore meta | jq -r .type | sort -u                            # what document types exist?
+lore meta | jq -r 'select(.type=="Metric").path' | xargs cat # drill into metrics
+```
+
+Read-scoping comes for free: the walk goes through the session filesystem, so
+`lore meta` only ever sees what the identity can already read.
+
+**OKF annotation.** When the okf plugin is active, it enriches `lore meta`
+records (via `MetaExtenderProvider`) with an `okf` field — but only for
+documents where OKF actually applies (the owning docset has `okf` and the path
+matches its patterns), so read-side discovery agrees exactly with write-side
+enforcement:
+
+```json
+{"path":"orders.md","type":"Table","okf":{"valid":true}}
+{"path":"draft.md","title":"No type","okf":{"valid":false,"error":"frontmatter is missing the required non-empty 'type' field"}}
+```
+
+```bash
+lore meta | jq -r 'select(.okf.valid == false) | .path'   # find non-conformant docs
+```
 
 ## CLI Commands
 

@@ -23,6 +23,14 @@ func NewInboxPlugin() *InboxPlugin { return &InboxPlugin{} }
 // GrantTypes implements GrantTypeProvider.
 func (*InboxPlugin) GrantTypes() []GrantType { return []GrantType{publishGrant{}} }
 
+// Info implements PluginInfoProvider.
+func (*InboxPlugin) Info() PluginInfo { return PluginInfo{Name: "inbox", Version: "1.0.0"} }
+
+var (
+	_ GrantTypeProvider  = (*InboxPlugin)(nil)
+	_ PluginInfoProvider = (*InboxPlugin)(nil)
+)
+
 // publishGrant is the "publish" grant type: read anywhere in the docset, no
 // deletes, create/edit only within the docset's inbox.
 type publishGrant struct{}

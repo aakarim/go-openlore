@@ -20,6 +20,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/metrics"
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
+	"github.com/aakarim/go-openlore/pkg/meta"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -80,6 +81,10 @@ type Server struct {
 	// front of Stat/ReadDir/ReadFile in registration order. Empty in core
 	// go-openlore; when empty no read wrapper is installed (zero read overhead).
 	readMW []ReadMiddleware
+
+	// metaExtenders are the `lore meta` extenders contributed by plugins,
+	// installed per session in buildSessionShell.
+	metaExtenders []meta.Extender
 
 	// postCommitMW is the post-commit middleware contributed by plugins, run at
 	// the applier after a durable commit (feed emit, post_write hooks) in
@@ -199,6 +204,16 @@ func newServerWithRoot(rootDir string, rootFS vfs.FileSystem, opts ...config.Opt
 			}
 			docsetRoots = append(docsetRoots, display)
 		}
+	}
+
+	// Built-in OKF plugin: validates Open Knowledge Format documents on write
+	// (pre-commit admission middleware). Registered here — after docsets are
+	// resolved (auth config or the unenforced-mode public docset) but before the
+	// write log is built — because it resolves the effective OKF config per write
+	// from the docset that owns the target path. Only registered when at least
+	// one docset carries OKF config.
+	if anyDocsetHasOKF(s.auth.Docsets) {
+		s.registerPlugin(newOKF(s.auth.Docsets, logger))
 	}
 
 	// Set up root directory. A caller-supplied rootFS wins (installed before the
@@ -642,6 +657,21 @@ func (s *Server) registerPlugin(p any) {
 			s.grants.register(g)
 		}
 	}
+	if cp, ok := p.(CommandProvider); ok {
+		for _, c := range cp.LoreCommands() {
+			cmds.RegisterLoreSub(c)
+		}
+	}
+	if mp, ok := p.(MetaExtenderProvider); ok {
+		s.metaExtenders = append(s.metaExtenders, mp.MetaExtenders()...)
+	}
+	// Record the plugin's identity + version in the boot logs. Logged per
+	// registration so it captures plugins registered after NewServer (e.g. the
+	// inbox plugin, wired by the CLI via RegisterPlugin) too.
+	if ip, ok := p.(PluginInfoProvider); ok && s.logger != nil {
+		info := ip.Info()
+		s.logger.Info("plugin registered", "name", info.Name, "version", info.Version)
+	}
 }
 
 // writeChain composes the admission (pre-commit) middleware around a terminal
@@ -801,6 +831,7 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	// `publish`. Computed once here, where the access authority lives.
 	sh.SetDocsets(s.sessionDocsets(id))
 	sh.SetPublishTargets(s.sessionPublishTargets(id))
+	sh.SetMetaExtenders(s.metaExtenders)
 
 	// Set identity info as environment variables
 	if id.IdentityName != "" {

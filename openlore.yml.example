@@ -224,6 +224,15 @@ files:
 #     - cmd: "/usr/local/bin/openlore-version"
 #       fail_on_error: true
 
+# ── OKF Validator Plugin ──────────────────────────────
+#
+# The built-in Open Knowledge Format (OKF) plugin validates knowledge
+# documents on write. It is configured PER DOCSET in lore.json (not here), so
+# OKF scoping reads the same display roots as the docset's paths/grants and can
+# never drift from them. Add an `okf` block to a docset in lore.json to enable
+# it for that docset's subtree; scope narrower subtrees with nested docsets.
+# See lore.json.example for the schema.
+
 # ── Display ───────────────────────────────────────────
 
 # Message of the day shown when a client connects.
