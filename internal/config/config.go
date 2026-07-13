@@ -201,6 +201,10 @@ type JWKSSpec struct {
 // DocsetSpec defines a named set of path mappings.
 type DocsetSpec struct {
 	Paths []PathMapping `json:"paths"`
+	// Aliases are alternate display roots for the first path. They expose the
+	// same content while the first path remains canonical for home, inbox,
+	// policy, hooks, and changesets.
+	Aliases []string `json:"aliases,omitempty"`
 	// Inbox names a subfolder (VFS path, relative to a docset root or absolute)
 	// that the `publish` grant confines create/edit to. Empty = the docset has
 	// no inbox, so a `publish` grant on it can write nothing.

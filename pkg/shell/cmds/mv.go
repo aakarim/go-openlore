@@ -55,7 +55,12 @@ func CmdMv(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.
 	if destinationInfo, statErr := ctx.FS().Stat(ctx.Resolve(destination)); statErr == nil && destinationInfo.Dir {
 		destination = path.Join(destination, path.Base(resolvedSource))
 	}
-	if resolvedSource == ctx.Resolve(destination) {
+	resolvedDestination := ctx.Resolve(destination)
+	if canonicalizer, ok := ctx.FS().(vfs.PathCanonicalizer); ok {
+		resolvedSource = canonicalizer.CanonicalPath(resolvedSource)
+		resolvedDestination = canonicalizer.CanonicalPath(resolvedDestination)
+	}
+	if resolvedSource == resolvedDestination {
 		return 0
 	}
 

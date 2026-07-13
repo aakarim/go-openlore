@@ -37,6 +37,7 @@
       "paths": [
         {"published/backend-home": "/home/backend"}
       ],
+      "aliases": ["/backend"],
       "inbox": "inbox"
     },
     "ops": {

@@ -79,12 +79,12 @@ func init() {
 }
 
 // cmdLoreDocsets prints an aligned, greppable table of the session's accessible
-// docsets: name, direct access (r/rw), attribute tokens (home,publish),
-// and display paths.
+// docset mounts: name, grant, attribute tokens, display path, and canonical
+// target for alias rows.
 func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	docsets := ctx.Docsets()
 
-	rows := [][4]string{{"DOCSET", "GRANT", "ATTRIBUTES", "PATHS"}}
+	rows := [][5]string{{"DOCSET", "GRANT", "ATTRIBUTES", "PATH", "TARGET"}}
 	for _, d := range docsets {
 		grant := d.Grant
 		if grant == "" {
@@ -97,15 +97,22 @@ func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, 
 		if d.Inbox {
 			attrs = append(attrs, "inbox")
 		}
+		if d.AliasTarget != "" {
+			attrs = append(attrs, "alias")
+		}
 		attrStr := "-"
 		if len(attrs) > 0 {
 			attrStr = strings.Join(attrs, ",")
 		}
-		rows = append(rows, [4]string{d.Name, grant, attrStr, strings.Join(d.Paths, ",")})
+		target := d.AliasTarget
+		if target == "" {
+			target = "-"
+		}
+		rows = append(rows, [5]string{d.Name, grant, attrStr, strings.Join(d.Paths, ","), target})
 	}
 
 	// Column widths from every cell except the last column (which is ragged).
-	var w0, w1, w2 int
+	var w0, w1, w2, w3 int
 	for _, r := range rows {
 		if len(r[0]) > w0 {
 			w0 = len(r[0])
@@ -116,9 +123,12 @@ func cmdLoreDocsets(ctx CmdContext, args []string, w io.Writer, errW io.Writer, 
 		if len(r[2]) > w2 {
 			w2 = len(r[2])
 		}
+		if len(r[3]) > w3 {
+			w3 = len(r[3])
+		}
 	}
 	for _, r := range rows {
-		fmt.Fprintf(w, "%-*s  %-*s  %-*s  %s\n", w0, r[0], w1, r[1], w2, r[2], r[3])
+		fmt.Fprintf(w, "%-*s  %-*s  %-*s  %-*s  %s\n", w0, r[0], w1, r[1], w2, r[2], w3, r[3], r[4])
 	}
 	return 0
 }

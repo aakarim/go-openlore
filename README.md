@@ -210,17 +210,20 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 
 ```
 $ lore docsets
-DOCSET    GRANT    ATTRIBUTES   PATHS
-public    ro       -            /docs/public,/docs/getting-started.md
-backend   rw       -            /docs/backend,/docs/api
-home      rw       home,inbox   /home/backend
+DOCSET    GRANT    ATTRIBUTES   PATH             TARGET
+public    ro       -            /docs/public     -
+backend   rw       -            /docs/backend    -
+home      rw       home,inbox   /home/backend    -
+home      rw       alias        /backend         /home/backend
 ```
 
 - `GRANT` is the named grant you hold on the docset: `ro` (read the whole docset),
   `rw` (read + write anywhere in it), or `publish` (read the whole docset, create/edit
   only within its inbox, never delete).
 - `ATTRIBUTES` is a comma-joined set of tokens (`-` if none): `home` (your `$HOME`
-  docset), `inbox` (the docset declares an inbox folder).
+  docset), `inbox` (the docset declares an inbox folder), or `alias` (this mount
+  resolves to the canonical path in `TARGET`). Canonical rows always precede
+  aliases for the same docset.
 
 **Publishing**
 
@@ -740,7 +743,8 @@ Create a `lore.json` to control access per public key:
   "docsets": {
     "public": { "paths": ["/docs/public"] },
     "backend": {
-      "paths": ["/docs/api", {"internal/specs": "/docs/specs"}]
+      "paths": ["/docs/api", {"internal/specs": "/docs/specs"}],
+      "aliases": ["/api"]
     }
   },
   "default": { "public": "ro" },
@@ -759,6 +763,27 @@ Each identity holds a named **grant** on each docset it can access — `ro`
 (read), `rw` (read + write), or `publish` (read all, create/edit only in the
 docset's inbox, no deletes). The `default` map is the grant set for keyless /
 unrecognized callers.
+
+### Path Aliases
+
+A docset can expose alternate virtual roots for its first canonical path:
+
+```json
+{
+  "docsets": {
+    "jared": {
+      "paths": ["/agent/jared"],
+      "aliases": ["/jared"]
+    }
+  }
+}
+```
+
+Both `/agent/jared/notes.md` and `/jared/notes.md` access the same file. Shell
+navigation preserves the path the caller used, but authorization, approvals,
+changesets, hooks, events, inboxes, and `$HOME` use `/agent/jared` as the
+canonical identity. Aliases must be absolute, normalized, and must not overlap
+another canonical path or alias.
 
 ### Home Directory
 

@@ -202,6 +202,13 @@ type WriteScopeFS interface {
 	CanWrite(path string) bool
 }
 
+// PathCanonicalizer is optionally implemented by filesystems that expose more
+// than one virtual path for the same file. Commands use it when path identity
+// matters, such as avoiding a move from an alias onto its canonical path.
+type PathCanonicalizer interface {
+	CanonicalPath(path string) string
+}
+
 // ReadTracker is optionally implemented by a session filesystem that remembers
 // the content hash of every file read during the session. It lets the write
 // seam compare-and-swap a whole-file overwrite against the version the caller

@@ -49,8 +49,12 @@ type CmdContext interface {
 type DocsetInfo struct {
 	// Name is the docset's logical name (its key in the auth config).
 	Name string
-	// Paths are the docset's display (virtual) paths in the filesystem.
+	// Paths contains the single display path represented by this row. It remains
+	// a slice so existing command consumers can parse canonical rows unchanged.
 	Paths []string
+	// AliasTarget is the canonical display path when this row represents an
+	// alias. Empty means the row is canonical.
+	AliasTarget string
 	// Grant is the grant name the session holds on this docset (ro/rw/publish).
 	Grant string
 	// Writable reports whether this session may write to the docset directly

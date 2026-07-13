@@ -127,6 +127,77 @@ func TestValidateGrants_RejectsDuplicateDisplayRoots(t *testing.T) {
 	}
 }
 
+func TestValidateGrants_Aliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		docsets map[string]config.DocsetSpec
+		wantErr bool
+	}{
+		{
+			name: "valid",
+			docsets: map[string]config.DocsetSpec{
+				"jared": {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{"/jared"}},
+				"adil":  {Paths: []config.PathMapping{{Source: "/user/adil"}}, Aliases: []string{"/adil"}},
+			},
+		},
+		{
+			name:    "without canonical path",
+			docsets: map[string]config.DocsetSpec{"jared": {Aliases: []string{"/jared"}}},
+			wantErr: true,
+		},
+		{
+			name:    "relative",
+			docsets: map[string]config.DocsetSpec{"jared": {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{"jared"}}},
+			wantErr: true,
+		},
+		{
+			name: "overlapping canonical path",
+			docsets: map[string]config.DocsetSpec{
+				"jared": {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{"/legacy"}},
+				"other": {Paths: []config.PathMapping{{Source: "/legacy/private"}}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "overlapping aliases",
+			docsets: map[string]config.DocsetSpec{
+				"jared": {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{"/legacy"}},
+				"other": {Paths: []config.PathMapping{{Source: "/agent/other"}}, Aliases: []string{"/legacy/private"}},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{authEnforced: true, grants: newGrantRegistry(), auth: &config.AuthConfig{Docsets: tt.docsets}}
+			err := s.validateGrants()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateGrants() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateGrants_RejectsAliasOverlappingMount(t *testing.T) {
+	for _, alias := range []string{"/jobs", "/jobs/private"} {
+		t.Run(alias, func(t *testing.T) {
+			merge := NewMergeFS()
+			merge.MountSystem("jobs", NewFSAdapter(fstest.MapFS{"status": {Data: []byte("ok")}}))
+			s := &Server{
+				authEnforced: true,
+				grants:       newGrantRegistry(),
+				merge:        merge,
+				auth: &config.AuthConfig{Docsets: map[string]config.DocsetSpec{
+					"jared": {Paths: []config.PathMapping{{Source: "/agent/jared"}}, Aliases: []string{alias}},
+				}},
+			}
+			if err := s.validateGrants(); err == nil {
+				t.Fatalf("expected alias %q to conflict with /jobs mount", alias)
+			}
+		})
+	}
+}
+
 // TestSessionPublishTargets_ResolvesInboxPath pins that a publish target
 // carries the docset's resolved inbox path (not just its name), so `publish`
 // routes into /docset/inbox/... where the publish grant actually permits writes.

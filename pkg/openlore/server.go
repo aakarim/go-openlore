@@ -497,7 +497,7 @@ func (s *Server) writeConflictPolicy(p string) vfs.WriteConflictPolicy {
 	if global == "" {
 		global = vfs.DefaultWriteConflictPolicy
 	}
-	clean := vfs.CleanPath(p)
+	clean := s.canonicalPath(p)
 	for _, ds := range s.auth.Docsets {
 		if ds.WriteConflictPolicy == "" {
 			continue
@@ -633,8 +633,19 @@ func (s *Server) CommitChangeSet(ctx context.Context, actor Actor, cs vfs.Change
 	if s.writeLog == nil {
 		return WriteResult{}, vfs.ErrReadOnly
 	}
+	cs = s.canonicalChangeSet(cs)
 	h, err := s.writeLog.Submit(ctx, actor, cs)
 	return WriteResult{Hash: h}, err
+}
+
+func (s *Server) canonicalChangeSet(cs vfs.ChangeSet) vfs.ChangeSet {
+	cs.Target = s.canonicalPath(cs.Target)
+	if cs.RemoveAll != nil && cs.RemoveAll.Opts.Expected != nil {
+		remove := *cs.RemoveAll
+		remove.Opts.Expected = copyCanonicalSnapshot(remove.Opts.Expected, s.canonicalPath)
+		cs.RemoveAll = &remove
+	}
+	return cs
 }
 
 // registerPlugin wires any middleware a plugin provides into the admission,
@@ -780,12 +791,19 @@ func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
 	// Session CAS: track the hash of every file read (and written) so a
 	// later blind overwrite compare-and-swaps against the version the
 	// caller last saw, without naming a hash — an overwrite fails if the
-	// file changed since it was read. Outermost so it observes all reads;
-	// only meaningful (and only added) when the substrate is writable.
+	// file changed since it was read. Outside policy layers so it observes all
+	// reads, but inside aliasing so both paths share canonical CAS state. Only
+	// meaningful (and only added) when the substrate is writable.
 	if !s.config.Readonly {
 		if w, ok := sessionFS.(vfs.WritableFS); ok {
 			sessionFS = newReadTrackingFS(w)
 		}
+	}
+	// Expose this identity's aliases outermost so callers can retain the alias
+	// spelling while every internal operation, including CAS tracking, sees the
+	// canonical path. Ungranted aliases are never added to the session tree.
+	if aliases := s.aliasesForIdentity(id); len(aliases) > 0 {
+		sessionFS = newAliasFS(sessionFS, aliases)
 	}
 	return sessionFS
 }
@@ -852,9 +870,10 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	return sh
 }
 
-// sessionDocsets resolves the docsets this session can access, with their
-// display paths, grant, and attributes — the per-session view surfaced by
-// `lore docsets`.
+// sessionDocsets resolves one row per accessible canonical or alias mount. A
+// docset's canonical paths are emitted first, followed by aliases targeting its
+// first path; `lore docsets` preserves this order for older consumers that use
+// the first row as the docset's mount.
 func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 	if len(id.Grants) == 0 {
 		return nil
@@ -866,20 +885,28 @@ func (s *Server) sessionDocsets(id Identity) []cmds.DocsetInfo {
 		if !ok {
 			continue
 		}
-		var paths []string
-		for _, pm := range ds.Paths {
-			paths = append(paths, displayPath(pm))
+		for i, pm := range ds.Paths {
+			out = append(out, cmds.DocsetInfo{
+				Name:     name,
+				Paths:    []string{displayPath(pm)},
+				Grant:    grantName,
+				Writable: writable[name],
+				Home:     i == 0 && name == id.HomeDocset,
+				Inbox:    inboxPath(ds) != "",
+			})
 		}
-		out = append(out, cmds.DocsetInfo{
-			Name:     name,
-			Paths:    paths,
-			Grant:    grantName,
-			Writable: writable[name],
-			Home:     name == id.HomeDocset,
-			Inbox:    inboxPath(ds) != "",
-		})
+		target := primaryDisplayPath(ds)
+		for _, alias := range ds.Aliases {
+			out = append(out, cmds.DocsetInfo{
+				Name:        name,
+				Paths:       []string{vfs.CleanPath(alias)},
+				AliasTarget: target,
+				Grant:       grantName,
+				Writable:    writable[name],
+			})
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
