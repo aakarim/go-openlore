@@ -801,6 +801,21 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	canWrite := s.authEnforced && id.IdentityName != "" && scopeGrantsWrite(id.Scopes) && s.hasWritableGrant(id)
 
 	sh := shell.NewShell(sessionFS)
+	if s.config.LogUnsupportedShellUsage {
+		sh.SetUnsupportedUsageHandler(func(usage shell.UnsupportedUsage) {
+			kind := "unknown_command"
+			attrs := []any{"command", usage.Command}
+			if usage.Flag != "" {
+				kind = "unsupported_flag"
+				attrs = append(attrs, "flag", usage.Flag)
+			}
+			attrs = append(attrs, "kind", kind)
+			if id.IdentityName != "" {
+				attrs = append(attrs, "identity", id.IdentityName)
+			}
+			s.logger.Info("unsupported shell usage", attrs...)
+		})
+	}
 	if s.config.DefaultCwd != "" {
 		sh.SetCwd(s.config.DefaultCwd)
 	}

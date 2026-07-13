@@ -521,6 +521,7 @@ Flags:
   --ca-keys            Trusted CA public keys for SSH certificate auth
   --host-cert          SSH host certificate signed by a CA
   --skills-dir         Directory containing runtime skills
+  --log-unsupported    Log unsupported shell commands and flags as structured events
 ```
 
 ## Agent Setup
