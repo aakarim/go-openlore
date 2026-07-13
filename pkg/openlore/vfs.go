@@ -646,6 +646,16 @@ func (m *MergeFS) SystemMountPaths() []string {
 	return out
 }
 
+// mountPaths returns every named mount root, including control-plane mounts.
+// Alias validation uses it to prevent aliases from shadowing mounted backends.
+func (m *MergeFS) mountPaths() []string {
+	var out []string
+	for name := range m.mounts {
+		out = append(out, "/"+name)
+	}
+	return out
+}
+
 // SetWriteable fans out to every writable-capable backend (root + mounts).
 // Read-only backends (EmbedFS, FSAdapter) are skipped. It fails fast if no
 // backend can be made writable at all (e.g. a fully embedded, read-only

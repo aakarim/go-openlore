@@ -28,27 +28,26 @@ it (`lore whoami`, etc.) without reshaping a command's contract later.
 
 ## `lore docsets` output
 
-Space-aligned table, header row, values within a multi-valued cell joined by `,`,
-named attribute tokens (grep-friendly), `-` for empty:
+Space-aligned table with one row per mount, named attribute tokens
+(grep-friendly), and `-` for empty:
 
 ```
-DOCSET    ACCESS  ATTRIBUTES     PATHS
-public    r       -              /docs/public,/docs/getting-started.md
-frontend  r       -              /docs/frontend,/docs/shared
-backend   rw      approval       /docs/backend,/docs/api,/docs/database
-home      rw      home,publish   /home/backend
+DOCSET    GRANT  ATTRIBUTES  PATH             TARGET
+public    ro     -           /docs/public     -
+backend   rw     -           /docs/backend    -
+home      rw     home,inbox  /home/backend    -
+home      rw     alias       /backend         /home/backend
 ```
 
-- **`ACCESS`** — `r` or `rw`. `rw` = the docset is *directly* writable by this session
-  (see writability below). Binary; never mangled.
+- **`GRANT`** — the named grant held on the docset (`ro`, `rw`, `publish`, or a
+  plugin-contributed grant).
 - **`ATTRIBUTES`** — named tokens, any of:
   - `home` — this docset is the session's home docset (`$HOME`).
-  - `publish` — this docset has a publish inbox (`publish_dir`) the user may publish to.
-  - `approval` — some or all writes here are approval-gated (`requires_approval`).
-    Gating can be path-scoped within a docset, so the token means "may be gated," not
-    "always gated" — documented as a caveat.
-- **`PATHS`** — display (virtual) paths, comma-joined. Never on-disk source paths.
-- **Order** — the order docsets appear in the identity's lore spec.
+  - `inbox` — the docset declares an inbox.
+  - `alias` — this row is an alternate mount whose canonical path is `TARGET`.
+- **`PATH`** — the display (virtual) path for this mount. Never an on-disk source path.
+- **`TARGET`** — the canonical display path for aliases; `-` for canonical rows.
+- **Order** — docset name, with canonical rows before aliases of that docset.
 - **Header** — kept; agents can `tail -n +2` / `grep -v '^DOCSET'` for machine parsing.
 
 ## Two concerns, kept separate

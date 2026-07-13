@@ -19,9 +19,9 @@ import (
 // last-read hash no longer matches. A successful write updates the tracked hash
 // so a caller can write the same file repeatedly after a single read.
 //
-// It sits outside scopedWriteFS so it observes all reads and all
-// writes, and forwards the optional scope introspection (vfs.WriteScopeFS) used
-// by `spawn` fail-fast checks.
+// It sits outside scopedWriteFS so it observes all reads and all writes, but
+// inside aliasFS so aliases share canonical CAS state. It forwards the optional
+// scope introspection (vfs.WriteScopeFS) used by `spawn` fail-fast checks.
 type readTrackingFS struct {
 	vfs.WritableFS // read/write delegation (Stat, ReadDir, SetWriteable, Mkdir, …)
 

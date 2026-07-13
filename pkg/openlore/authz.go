@@ -51,6 +51,54 @@ func (s *Server) validateGrants() error {
 			owner[root] = name
 		}
 	}
+	// Aliases are rewritten before authorization. Reject ambiguous namespace
+	// shapes so no alias can shadow or bypass another docset boundary.
+	type rootSpec struct {
+		docset string
+		path   string
+		alias  bool
+	}
+	var roots []rootSpec
+	for name, ds := range s.auth.Docsets {
+		for _, pm := range ds.Paths {
+			roots = append(roots, rootSpec{docset: name, path: displayPath(pm)})
+		}
+		if len(ds.Aliases) > 0 && len(ds.Paths) == 0 {
+			return fmt.Errorf("auth config: docset %q declares aliases without a canonical path", name)
+		}
+		for _, raw := range ds.Aliases {
+			if !strings.HasPrefix(raw, "/") {
+				return fmt.Errorf("auth config: docset %q alias %q must be absolute", name, raw)
+			}
+			clean := vfs.CleanPath(raw)
+			if clean != raw {
+				return fmt.Errorf("auth config: docset %q alias %q must be normalized as %q", name, raw, clean)
+			}
+			roots = append(roots, rootSpec{docset: name, path: clean, alias: true})
+		}
+	}
+	if s.merge != nil {
+		for _, mount := range s.merge.mountPaths() {
+			roots = append(roots, rootSpec{docset: "<mount>", path: mount})
+		}
+	}
+	for i, candidate := range roots {
+		if !candidate.alias {
+			continue
+		}
+		for j, other := range roots {
+			if i == j {
+				continue
+			}
+			if pathWithinRoot(candidate.path, other.path) || pathWithinRoot(other.path, candidate.path) {
+				kind := "canonical path"
+				if other.alias {
+					kind = "alias"
+				}
+				return fmt.Errorf("auth config: docset %q alias %q overlaps docset %q %s %q", candidate.docset, candidate.path, other.docset, kind, other.path)
+			}
+		}
+	}
 	return nil
 }
 
@@ -64,6 +112,58 @@ func displayPath(pm config.PathMapping) string {
 	return vfs.CleanPath(d)
 }
 
+func primaryDisplayPath(ds config.DocsetSpec) string {
+	if len(ds.Paths) == 0 {
+		return ""
+	}
+	return displayPath(ds.Paths[0])
+}
+
+// canonicalPath resolves aliases across all configured docsets. Validation
+// rejects overlaps, but longest-prefix selection keeps this helper deterministic
+// before startup validation and for direct library use.
+func (s *Server) canonicalPath(p string) string {
+	clean := vfs.CleanPath(p)
+	bestAlias := ""
+	bestTarget := ""
+	for _, ds := range s.auth.Docsets {
+		target := primaryDisplayPath(ds)
+		for _, raw := range ds.Aliases {
+			alias := vfs.CleanPath(raw)
+			if pathWithinRoot(alias, clean) && len(alias) > len(bestAlias) {
+				bestAlias = alias
+				bestTarget = target
+			}
+		}
+	}
+	if bestAlias == "" {
+		return clean
+	}
+	return replacePathRoot(clean, bestAlias, bestTarget)
+}
+
+func (s *Server) aliasesForIdentity(id Identity) []pathAlias {
+	var aliases []pathAlias
+	for name, grantName := range id.Grants {
+		ds, ok := s.auth.Docsets[name]
+		if !ok {
+			continue
+		}
+		grant, ok := s.grants.get(grantName)
+		if !ok {
+			continue
+		}
+		target := primaryDisplayPath(ds)
+		if target == "" || !grant.CanRead(ds, target) {
+			continue
+		}
+		for _, alias := range ds.Aliases {
+			aliases = append(aliases, pathAlias{Alias: alias, Target: target})
+		}
+	}
+	return aliases
+}
+
 // mostSpecificDocset resolves the single docset that governs display path p: the
 // one whose display root is the longest prefix of p, across ALL configured
 // docsets (not just the ones an identity holds a grant on). Every docset is an
@@ -72,7 +172,7 @@ func displayPath(pm config.PathMapping) string {
 // reaches into a nested docset. Ties on root length are broken by docset name
 // for determinism (overlapping identical roots are an ambiguous config).
 func (s *Server) mostSpecificDocset(p string) (string, config.DocsetSpec, bool) {
-	clean := vfs.CleanPath(p)
+	clean := s.canonicalPath(p)
 	bestLen := -1
 	bestName := ""
 	var bestDS config.DocsetSpec
@@ -140,6 +240,7 @@ func (s *Server) identityCanWrite(id Identity, action vfs.ChangeAction, p string
 	if !scopeGrantsWrite(id.Scopes) {
 		return false // token scope ceiling: only full authority may write
 	}
+	p = s.canonicalPath(p)
 	ds, grant, ok := s.grantForPath(id, p)
 	if !ok {
 		return false

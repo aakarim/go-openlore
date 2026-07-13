@@ -31,8 +31,9 @@ func enforcedDocsetServer() *Server {
 					Readonly: boolPtr(true),
 				},
 				"home": {
-					Paths: []config.PathMapping{{Source: "/home/agent", Display: "/home/agent"}},
-					Inbox: "inbox",
+					Paths:   []config.PathMapping{{Source: "/home/agent", Display: "/home/agent"}},
+					Aliases: []string{"/agent"},
+					Inbox:   "inbox",
 				},
 			},
 		},
@@ -65,7 +66,7 @@ func TestSessionDocsets_Enforced(t *testing.T) {
 	got := s.sessionDocsets(agentIdentity())
 
 	// Sorted by name.
-	wantOrder := []string{"archive", "backend", "home", "public"}
+	wantOrder := []string{"archive", "backend", "home", "home", "public"}
 	if len(got) != len(wantOrder) {
 		t.Fatalf("got %d docsets, want %d: %+v", len(got), len(wantOrder), got)
 	}
@@ -105,6 +106,10 @@ func TestSessionDocsets_Enforced(t *testing.T) {
 	}
 	if !home.Writable {
 		t.Fatalf("home should be writable")
+	}
+	alias := got[3]
+	if alias.Paths[0] != "/agent" || alias.AliasTarget != "/home/agent" || alias.Home || alias.Inbox {
+		t.Fatalf("home alias row = %+v", alias)
 	}
 }
 
