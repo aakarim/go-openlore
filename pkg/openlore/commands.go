@@ -1,6 +1,9 @@
 package openlore
 
-import "github.com/aakarim/go-openlore/pkg/shell/cmds"
+import (
+	"github.com/aakarim/go-openlore/pkg/meta"
+	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+)
 
 // CommandProvider is implemented by a plugin that contributes `lore`
 // subcommands. registerPlugin detects it and registers each returned command
@@ -12,11 +15,11 @@ type CommandProvider interface {
 }
 
 // MetaExtenderProvider is implemented by a plugin that enriches `lore meta`
-// records. registerPlugin detects it and registers each extender
-// (registerMetaExtender). This is how the okf plugin annotates documents with
-// OKF conformance in `lore meta` output where OKF applies, so read-side
-// discovery agrees with write-side enforcement — without coupling the generic
-// `lore meta` reader (see meta.go) to the OKF spec.
+// records. registerPlugin detects it and collects each extender onto the server,
+// which installs them per session (buildSessionShell). This is how the okf
+// plugin annotates documents with OKF conformance in `lore meta` output where
+// OKF applies, so read-side discovery agrees with write-side enforcement —
+// without coupling the generic `lore meta` reader (pkg/meta) to the OKF spec.
 type MetaExtenderProvider interface {
-	MetaExtenders() []MetaExtender
+	MetaExtenders() []meta.Extender
 }

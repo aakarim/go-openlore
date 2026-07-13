@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/aakarim/go-openlore/pkg/meta"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -156,5 +157,6 @@ func (c *frozenContext) WriteConflictPolicy(string) vfs.WriteConflictPolicy {
 }
 func (c *frozenContext) Docsets() []DocsetInfo           { return nil }
 func (c *frozenContext) PublishTargets() []PublishTarget { return nil }
+func (c *frozenContext) MetaExtenders() []meta.Extender  { return nil }
 
 var _ CmdContext = (*frozenContext)(nil)

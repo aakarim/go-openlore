@@ -3,6 +3,7 @@ package cmds
 import (
 	"io"
 
+	"github.com/aakarim/go-openlore/pkg/meta"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -36,6 +37,10 @@ type CmdContext interface {
 	// with their per-docset size caps. Used by `publish`. The host computes this
 	// once per session; a standalone shell returns nil.
 	PublishTargets() []PublishTarget
+	// MetaExtenders reports the plugin-contributed extenders that enrich `lore
+	// meta` records. The host installs these once per session; a standalone
+	// shell returns nil.
+	MetaExtenders() []meta.Extender
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session

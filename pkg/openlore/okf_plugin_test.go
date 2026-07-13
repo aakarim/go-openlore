@@ -284,11 +284,9 @@ func TestOKFPlugin_ImplementsMetaExtenderProvider(t *testing.T) {
 	var _ MetaExtenderProvider = pluginWith(docsWithOKF())
 }
 
-// End-to-end: registerPlugin must wire the okf meta extender into the global
-// lore-meta registry so `lore meta` annotates docs with OKF conformance where
-// OKF applies. Runs a real shell over a DirFS. (No reset helper is available
-// from this package; the registered extender is scoped to /wiki and harmless to
-// other tests, none of which run `lore meta`.)
+// End-to-end: registerPlugin must collect the okf meta extender onto the server
+// so a session shell (via SetMetaExtenders) annotates docs with OKF conformance
+// where OKF applies. Runs a real shell over a DirFS.
 func TestRegisterPlugin_WiresOKFIntoLoreMeta(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "wiki"), 0o755); err != nil {
@@ -307,11 +305,11 @@ func TestRegisterPlugin_WiresOKFIntoLoreMeta(t *testing.T) {
 	docsets := map[string]config.DocsetSpec{
 		"wiki": docset("/wiki", &config.OKFDocsetConfig{}),
 	}
-	t.Cleanup(func() { metaExtenders = nil })
 	s := &Server{grants: newGrantRegistry()}
-	s.registerPlugin(newOKF(docsets, nil)) // must call registerMetaExtender
+	s.registerPlugin(newOKF(docsets, nil)) // must collect the meta extender
 
 	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
+	sh.SetMetaExtenders(s.metaExtenders)
 	sh.SetCwd("/wiki")
 	var out, errOut bytes.Buffer
 	if code := sh.ExecPipeline("lore meta", &out, &errOut, nil); code != 0 {

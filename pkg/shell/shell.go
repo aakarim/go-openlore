@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aakarim/go-openlore/pkg/meta"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/shell/parser"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -33,6 +34,9 @@ type Shell struct {
 	// respectively. nil for a standalone shell.
 	docsets        []cmds.DocsetInfo
 	publishTargets []cmds.PublishTarget
+	// metaExtenders are the plugin-contributed extenders applied by `lore meta`,
+	// installed by the host per session. nil for a standalone shell.
+	metaExtenders []meta.Extender
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -90,6 +94,14 @@ func (s *Shell) SetPublishTargets(t []cmds.PublishTarget) { s.publishTargets = t
 
 // PublishTargets reports the per-session publish inboxes. Implements CmdContext.
 func (s *Shell) PublishTargets() []cmds.PublishTarget { return s.publishTargets }
+
+// SetMetaExtenders installs the plugin-contributed extenders applied by `lore
+// meta`.
+func (s *Shell) SetMetaExtenders(e []meta.Extender) { s.metaExtenders = e }
+
+// MetaExtenders reports the per-session `lore meta` extenders. Implements
+// CmdContext.
+func (s *Shell) MetaExtenders() []meta.Extender { return s.metaExtenders }
 
 // --- CmdContext interface implementation ---
 
