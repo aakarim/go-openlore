@@ -1,6 +1,7 @@
 package passkeys
 
 import (
+	"bytes"
 	"fmt"
 	"html"
 	"mime"
@@ -11,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/aakarim/go-openlore/pkg/vfs"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 // LoreBrowserHandler serves an authenticated web browser over the filesystem.
@@ -67,6 +70,16 @@ func (p *Passkeys) LoreBrowserHandler(fsForIdentity func(identity string) vfs.Fi
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Query().Get("raw") != "1" {
+			p.renderFile(w, r, lorePath, fsPath)
+			return
+		}
+		if isMarkdown(fsPath) {
+			if err := renderMarkdown(w, data); err != nil {
+				http.Error(w, "failed to render markdown", http.StatusInternalServerError)
+			}
+			return
+		}
 		ctype := mime.TypeByExtension(path.Ext(fsPath))
 		if ctype == "" {
 			ctype = "text/plain; charset=utf-8"
@@ -74,6 +87,57 @@ func (p *Passkeys) LoreBrowserHandler(fsForIdentity func(identity string) vfs.Fi
 		w.Header().Set("Content-Type", ctype)
 		w.Write(data)
 	})
+}
+
+func (p *Passkeys) renderFile(w http.ResponseWriter, r *http.Request, lorePath, fsPath string) {
+	parentURL := lorePath + path.Dir(fsPath)
+	if path.Dir(fsPath) == "/" {
+		parentURL += "/"
+	}
+
+	var crumbs strings.Builder
+	fmt.Fprintf(&crumbs, `<a href="%s/">Lore</a>`, html.EscapeString(strings.TrimRight(lorePath, "/")))
+	parts := strings.Split(strings.Trim(fsPath, "/"), "/")
+	for i, part := range parts {
+		crumbs.WriteString(`<span class="separator">/</span>`)
+		if i == len(parts)-1 {
+			fmt.Fprintf(&crumbs, `<span aria-current="page">%s</span>`, html.EscapeString(part))
+			continue
+		}
+		crumbPath := "/" + strings.Join(parts[:i+1], "/")
+		fmt.Fprintf(&crumbs, `<a href="%s%s/">%s</a>`, html.EscapeString(lorePath), html.EscapeString(crumbPath), html.EscapeString(part))
+	}
+
+	iframeURL := r.URL.EscapedPath() + "?raw=1"
+	name := path.Base(fsPath)
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">`)
+	b.WriteString(`<meta name="viewport" content="width=device-width, initial-scale=1">`)
+	fmt.Fprintf(&b, "<title>%s — OpenLore</title>", html.EscapeString(name))
+	b.WriteString(`<style>*{box-sizing:border-box}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}.bar{height:3rem;flex:none;display:flex;align-items:center;gap:.65rem;padding:0 .85rem;border-bottom:1px solid #30363d;background:#161b22}.breadcrumbs{display:flex;align-items:center;gap:.5rem;min-width:0;overflow:hidden;white-space:nowrap;font-size:.9rem}.breadcrumbs a{color:#58a6ff;text-decoration:none}.breadcrumbs a:hover{text-decoration:underline}.breadcrumbs span[aria-current=page]{overflow:hidden;text-overflow:ellipsis;color:#c9d1d9}.separator{color:#6e7681}.close{display:grid;place-items:center;width:2rem;height:2rem;margin-left:auto;flex:none;border-radius:6px;color:#8b949e;text-decoration:none;font-size:1.35rem;line-height:1}.close:hover{background:#30363d;color:#f0f6fc}iframe{width:100%;flex:1;border:0;background:#fff}</style></head><body>`)
+	fmt.Fprintf(&b, `<nav class="bar" aria-label="File navigation"><div class="breadcrumbs">%s</div><a class="close" href="%s" aria-label="Close file and return to folder" title="Close">×</a></nav>`, crumbs.String(), html.EscapeString(parentURL))
+	fmt.Fprintf(&b, `<iframe src="%s" title="%s"></iframe>`, html.EscapeString(iframeURL), html.EscapeString(name))
+	b.WriteString(`</body></html>`)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(b.String()))
+}
+
+func isMarkdown(filePath string) bool {
+	ext := strings.ToLower(path.Ext(filePath))
+	return ext == ".md" || ext == ".markdown"
+}
+
+func renderMarkdown(w http.ResponseWriter, source []byte) error {
+	var rendered bytes.Buffer
+	md := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	if err := md.Convert(source, &rendered); err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, err := fmt.Fprintf(w, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><base target="_top"><meta name="viewport" content="width=device-width, initial-scale=1"><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{max-width:860px;margin:0 auto;padding:2.5rem 2rem;font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;background:#fff}h1,h2{border-bottom:1px solid #d0d7de;padding-bottom:.3em}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .65em}h1:first-child{margin-top:0}a{color:#0969da}pre{overflow:auto;padding:1rem;border-radius:6px;background:#f6f8fa}code{font:85%% SFMono-Regular,Consolas,'Liberation Mono',monospace;background:#eff1f3;padding:.2em .4em;border-radius:4px}pre code{background:transparent;padding:0}blockquote{margin-left:0;padding-left:1em;border-left:4px solid #d0d7de;color:#59636e}img{max-width:100%%}table{border-collapse:collapse;display:block;overflow:auto}th,td{padding:.4rem .8rem;border:1px solid #d0d7de}tr:nth-child(2n){background:#f6f8fa}hr{border:0;border-top:1px solid #d0d7de}@media(prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}a{color:#58a6ff}h1,h2,hr{border-color:#30363d}pre,code,tr:nth-child(2n){background:#161b22}blockquote{border-color:#3d444d;color:#9198a1}th,td{border-color:#3d444d}}</style></head><body>%s</body></html>`, rendered.String())
+	return err
 }
 
 func (p *Passkeys) renderDir(w http.ResponseWriter, fsys vfs.FileSystem, lorePath, fsPath string) {
