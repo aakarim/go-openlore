@@ -29,17 +29,26 @@ func TestRenderFileIncludesBreadcrumbsIframeAndParentCloseLink(t *testing.T) {
 
 func TestRenderMarkdownFormatsGFMAndDoesNotRenderRawHTML(t *testing.T) {
 	rec := httptest.NewRecorder()
-	source := []byte("# Guide\n\n| A | B |\n| - | - |\n| one | two |\n\n<script>alert('no')</script>\n")
+	source := []byte("---\ntype: guide\ntags:\n  - setup\n  - web\n---\n# Guide\n\n| A | B |\n| - | - |\n| one | two |\n\n<script>alert('no')</script>\n")
 
 	if err := renderMarkdown(rec, source); err != nil {
 		t.Fatalf("renderMarkdown: %v", err)
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"<h1>Guide</h1>", "<table>", `<base target="_top">`} {
+	for _, want := range []string{
+		"<h1>Guide</h1>",
+		"<table>",
+		`<base target="_top">`,
+		`<section class="frontmatter"`,
+		"type: guide\ntags:\n  - setup\n  - web",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered markdown missing %q", want)
 		}
+	}
+	if strings.Contains(body, "<hr>") {
+		t.Fatal("frontmatter delimiters must not be rendered as Markdown")
 	}
 	if strings.Contains(body, "<script>") {
 		t.Fatal("raw HTML must not be rendered into the markdown document")
