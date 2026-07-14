@@ -8,9 +8,9 @@ import (
 )
 
 // LoreSub is a registered `lore` subcommand. Core subcommands (docsets, meta)
-// register themselves in init; plugins contribute more via the host
-// (openlore.CommandProvider → RegisterLoreSub), so the introspection surface is
-// extensible without reshaping the `lore` dispatcher.
+// register themselves in init; plugins contribute session-local entries via
+// the host, so the introspection surface is extensible without reshaping the
+// `lore` dispatcher.
 type LoreSub struct {
 	// Name is the subcommand word, e.g. "meta" in `lore meta`.
 	Name string
@@ -24,34 +24,46 @@ type LoreSub struct {
 // loreSubs is the registry of `lore` subcommands, keyed by name.
 var loreSubs = map[string]LoreSub{}
 
-// RegisterLoreSub adds (or replaces) a `lore` subcommand. Called from init for
-// core subcommands and by the host when a plugin contributes commands.
+// RegisterLoreSub adds (or replaces) a process-wide core `lore` subcommand.
+// Plugin commands should be installed on a session through CmdContext instead.
 func RegisterLoreSub(sub LoreSub) {
 	loreSubs[sub.Name] = sub
 }
 
 // CmdLore is the `lore` introspection dispatcher. Bare `lore` prints usage and
 // exits 0; an unknown subcommand errors to stderr and exits 1. Subcommands are
-// resolved from the loreSubs registry, so plugins can extend the surface.
+// resolved from the core registry plus the current session's plugin commands.
 func CmdLore(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
-		printLoreUsage(w)
+		printLoreUsage(ctx, w)
 		return 0
 	}
-	if sub, ok := loreSubs[args[0]]; ok {
+	if sub, ok := availableLoreSubs(ctx)[args[0]]; ok {
 		return sub.Run(ctx, args[1:], w, errW, stdin)
 	}
 	fmt.Fprintf(errW, "lore: unknown command %q\n", args[0])
-	printLoreUsage(errW)
+	printLoreUsage(ctx, errW)
 	return 1
 }
 
-func printLoreUsage(w io.Writer) {
+func availableLoreSubs(ctx CmdContext) map[string]LoreSub {
+	subs := make(map[string]LoreSub, len(loreSubs)+len(ctx.LoreCommands()))
+	for name, sub := range loreSubs {
+		subs[name] = sub
+	}
+	for _, sub := range ctx.LoreCommands() {
+		subs[sub.Name] = sub
+	}
+	return subs
+}
+
+func printLoreUsage(ctx CmdContext, w io.Writer) {
 	fmt.Fprintln(w, "Usage: lore <command>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
-	subs := make([]LoreSub, 0, len(loreSubs))
-	for _, s := range loreSubs {
+	available := availableLoreSubs(ctx)
+	subs := make([]LoreSub, 0, len(available))
+	for _, s := range available {
 		subs = append(subs, s)
 	}
 	sort.Slice(subs, func(i, j int) bool { return subs[i].Name < subs[j].Name })

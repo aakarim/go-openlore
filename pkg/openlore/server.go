@@ -86,6 +86,9 @@ type Server struct {
 	// installed per session in buildSessionShell.
 	metaExtenders []meta.Extender
 	metaFilters   []meta.Filter
+	// loreCommands are plugin-contributed `lore` subcommands, installed per
+	// session so multiple servers in one process cannot overwrite each other.
+	loreCommands []cmds.LoreSub
 
 	// postCommitMW is the post-commit middleware contributed by plugins, run at
 	// the applier after a durable commit (feed emit, post_write hooks) in
@@ -712,9 +715,7 @@ func (s *Server) registerPlugin(p any) error {
 		}
 	}
 	if cp, ok := p.(CommandProvider); ok {
-		for _, c := range cp.LoreCommands() {
-			cmds.RegisterLoreSub(c)
-		}
+		s.loreCommands = append(s.loreCommands, cp.LoreCommands()...)
 	}
 	if mp, ok := p.(MetaExtenderProvider); ok {
 		s.metaExtenders = append(s.metaExtenders, mp.MetaExtenders()...)
@@ -910,6 +911,7 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	sh.SetMetaFilters(s.sessionMetaFilters(id))
 	sh.SetPublishTargets(s.sessionPublishTargets(id))
 	sh.SetMetaExtenders(s.metaExtenders)
+	sh.SetLoreCommands(s.loreCommands)
 
 	// Set identity info as environment variables
 	if id.IdentityName != "" {

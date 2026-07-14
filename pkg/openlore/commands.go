@@ -6,10 +6,10 @@ import (
 )
 
 // CommandProvider is implemented by a plugin that contributes `lore`
-// subcommands. registerPlugin detects it and registers each returned command
-// with the lore dispatcher (cmds.RegisterLoreSub), so a plugin can extend the
-// `lore` introspection surface without the dispatcher knowing about it. Core
-// subcommands (docsets, meta) register themselves the same way.
+// subcommands. registerPlugin detects it and installs each returned command on
+// shells created by that server, so a plugin can extend the `lore`
+// introspection surface without leaking state across servers. Core subcommands
+// (docsets, meta) use the package registry.
 type CommandProvider interface {
 	LoreCommands() []cmds.LoreSub
 }

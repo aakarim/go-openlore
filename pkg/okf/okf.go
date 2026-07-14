@@ -84,6 +84,9 @@ func validateConcept(content []byte) error {
 func validateReserved(content []byte) error {
 	fm, _, ok := SplitFrontmatter(content)
 	if !ok {
+		if _, hasOpen := trimOpeningDelim(content); hasOpen {
+			return fmt.Errorf("YAML frontmatter block has no closing '---' delimiter")
+		}
 		return nil
 	}
 	_, err := parseFrontmatter(fm)

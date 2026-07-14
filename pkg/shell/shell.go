@@ -39,6 +39,9 @@ type Shell struct {
 	// installed by the host per session. nil for a standalone shell.
 	metaExtenders []meta.Extender
 	metaFilters   []meta.Filter
+	// loreCommands are plugin-contributed lore subcommands installed by the
+	// host per session. Core subcommands remain in the package registry.
+	loreCommands []cmds.LoreSub
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -112,6 +115,12 @@ func (s *Shell) SetMetaExtenders(e []meta.Extender) { s.metaExtenders = e }
 func (s *Shell) MetaExtenders() []meta.Extender { return s.metaExtenders }
 func (s *Shell) SetMetaFilters(f []meta.Filter) { s.metaFilters = f }
 func (s *Shell) MetaFilters() []meta.Filter     { return s.metaFilters }
+
+// SetLoreCommands installs plugin-contributed lore subcommands for this shell.
+func (s *Shell) SetLoreCommands(commands []cmds.LoreSub) { s.loreCommands = commands }
+
+// LoreCommands reports this shell's plugin-contributed lore subcommands.
+func (s *Shell) LoreCommands() []cmds.LoreSub { return s.loreCommands }
 
 // --- CmdContext interface implementation ---
 

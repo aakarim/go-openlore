@@ -42,6 +42,10 @@ type CmdContext interface {
 	// shell returns nil.
 	MetaExtenders() []meta.Extender
 	MetaFilters() []meta.Filter
+	// LoreCommands reports plugin-contributed lore subcommands installed for
+	// this session. Commands are session-local so one server cannot overwrite
+	// another server's plugin state in the process-wide core registry.
+	LoreCommands() []LoreSub
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session
