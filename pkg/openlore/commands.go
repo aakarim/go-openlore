@@ -2,17 +2,8 @@ package openlore
 
 import (
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
-	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 )
-
-// CommandProvider is implemented by a plugin that contributes `lore`
-// subcommands. registerPlugin detects it and registers each returned command
-// with the lore dispatcher (cmds.RegisterLoreSub), so a plugin can extend the
-// `lore` introspection surface without the dispatcher knowing about it. Core
-// subcommands (docsets, meta) register themselves the same way.
-type CommandProvider interface {
-	LoreCommands() []cmds.LoreSub
-}
 
 // MetaExtenderProvider is implemented by a plugin that enriches `lore meta`
 // records. registerPlugin detects it and collects each extender onto the server,
@@ -25,3 +16,8 @@ type MetaExtenderProvider interface {
 }
 
 type MetaFilterProvider interface{ MetaFilters() []meta.Filter }
+
+// ValidatorProvider is implemented by a plugin that contributes checks to the
+// core `lore validate` command. registerPlugin collects validators onto the
+// server, which installs them per session in buildSessionShell.
+type ValidatorProvider interface{ Validators() []validation.Validator }

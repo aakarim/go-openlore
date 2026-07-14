@@ -205,6 +205,7 @@ OpenLore is built on [Wish](https://github.com/charmbracelet/wish) from Charmbra
 | `lore` | Introspection dispatcher (run `lore` for subcommands) |
 | `lore docsets` | List the docsets you can access, their grants, paths, and attributes |
 | `lore meta` | Emit each document's frontmatter as NDJSON, cwd-scoped (see [Plugins](#plugins)) |
+| `lore validate [bundle]` | Lint an OKF bundle, local links, and aliased-path portability |
 
 `lore docsets` prints an aligned, greppable table:
 
@@ -388,15 +389,15 @@ registration. A plugin implements one or more provider interfaces:
 | `ReadMiddlewareProvider` | before-read middleware |
 | `PostCommitProvider` | post-commit middleware |
 | `GrantTypeProvider` | named grant types (e.g. `publish`) |
-| `CommandProvider` | `lore` subcommands (`LoreCommands() []cmds.LoreSub`) |
+| `ValidatorProvider` | checks run by the core `lore validate` command |
 | `MetaExtenderProvider` | fields added to `lore meta` records |
 | `PluginInfoProvider` | plugin name + version (`Info() PluginInfo`), logged at boot |
 
 Built-in plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers
 add their own via `Server.RegisterPlugin`. A plugin can extend the introspection
-surface without the `lore` dispatcher knowing about it: `CommandProvider` adds
-whole subcommands, and `MetaExtenderProvider` enriches an existing command's
-output (the okf plugin uses it to annotate `lore meta` — see below).
+surface without owning commands: `ValidatorProvider` extends the core-owned
+`lore validate` command, and `MetaExtenderProvider` enriches the core-owned
+`lore meta` command (the okf plugin provides both — see below).
 
 Every built-in plugin reports a name and semantic version via
 `PluginInfoProvider`, recorded in the server's boot logs as it registers, so it
@@ -414,10 +415,10 @@ The `okf` version tracks the OKF spec revision it validates (OKF v0.1).
 
 The built-in **Open Knowledge Format** plugin validates knowledge documents on
 write against [OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md).
-OKF is a directory of markdown files with YAML frontmatter; a document is
+OKF is a directory of markdown files with YAML frontmatter; a bundle is
 conformant when every non-reserved `.md` file opens with a parseable frontmatter
-block containing a non-empty `type` field. Reserved files (`index.md`,
-`log.md`) are validated leniently.
+block containing a non-empty `type` field and reserved files (`index.md`,
+`log.md`) follow their OKF structure.
 
 Enable it **per docset** in `lore.json` by adding an `okf` block to a docset —
 so OKF scoping reads the same display roots as the docset's paths and grants and
@@ -461,6 +462,34 @@ if err := okf.Validate(path, content); err != nil {
     // not OKF-conformant
 }
 ```
+
+### `lore validate` — bundle linter
+
+`lore validate [bundle]` is a core command. It scans the bundle directory (the
+current directory by default), runs validators contributed by enabled plugins,
+and prints every finding in a grep-friendly format. The built-in OKF plugin
+contributes the initial validator:
+
+```text
+tables/orders.md:1:1: error [okf/concept] frontmatter is missing the required non-empty 'type' field
+metrics/revenue.md:12:19: error [openlore/broken-link] local link "../tables/missing.md" does not resolve
+metrics/revenue.md:15:8: warning [openlore/alias-target] link targets aliased docset path /wiki; it may resolve differently on another machine
+2 errors, 1 warning
+```
+
+The checks are deliberately separated:
+
+- `okf/*` errors are mandatory OKF v0.1 bundle-conformance rules and are
+  implemented by `pkg/okf.ValidateBundle`.
+- `openlore/broken-link` and `openlore/link-outside-bundle` are OpenLore
+  operational errors. OKF itself requires consumers to tolerate broken links.
+- `openlore/alias-referrer` and `openlore/alias-target` are portability
+  warnings. A docset alias can resolve under a different checkout path on
+  another machine, so links should use the canonical docset path instead.
+
+Only bundle-local Markdown links are resolved. URL links are left to their
+protocol-specific tooling rather than fetched by the server. The command exits
+non-zero when it finds errors; warnings alone do not fail validation.
 
 ### `lore meta` — frontmatter reader
 

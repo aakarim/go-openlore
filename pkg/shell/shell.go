@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/shell/parser"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -39,6 +40,8 @@ type Shell struct {
 	// installed by the host per session. nil for a standalone shell.
 	metaExtenders []meta.Extender
 	metaFilters   []meta.Filter
+	// validators are plugin-contributed checks applied by `lore validate`.
+	validators []validation.Validator
 }
 
 // NewShell creates a new Shell backed by the given vfs.FileSystem.
@@ -112,6 +115,12 @@ func (s *Shell) SetMetaExtenders(e []meta.Extender) { s.metaExtenders = e }
 func (s *Shell) MetaExtenders() []meta.Extender { return s.metaExtenders }
 func (s *Shell) SetMetaFilters(f []meta.Filter) { s.metaFilters = f }
 func (s *Shell) MetaFilters() []meta.Filter     { return s.metaFilters }
+
+// SetValidators installs plugin-contributed checks for `lore validate`.
+func (s *Shell) SetValidators(validators []validation.Validator) { s.validators = validators }
+
+// Validators reports this shell's plugin-contributed validation checks.
+func (s *Shell) Validators() []validation.Validator { return s.validators }
 
 // --- CmdContext interface implementation ---
 

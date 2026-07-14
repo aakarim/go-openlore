@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -42,6 +43,8 @@ type CmdContext interface {
 	// shell returns nil.
 	MetaExtenders() []meta.Extender
 	MetaFilters() []meta.Filter
+	// Validators reports plugin-contributed checks used by `lore validate`.
+	Validators() []validation.Validator
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session

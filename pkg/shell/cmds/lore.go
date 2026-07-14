@@ -7,10 +7,7 @@ import (
 	"strings"
 )
 
-// LoreSub is a registered `lore` subcommand. Core subcommands (docsets, meta)
-// register themselves in init; plugins contribute more via the host
-// (openlore.CommandProvider → RegisterLoreSub), so the introspection surface is
-// extensible without reshaping the `lore` dispatcher.
+// LoreSub is a registered core `lore` subcommand.
 type LoreSub struct {
 	// Name is the subcommand word, e.g. "meta" in `lore meta`.
 	Name string
@@ -24,15 +21,14 @@ type LoreSub struct {
 // loreSubs is the registry of `lore` subcommands, keyed by name.
 var loreSubs = map[string]LoreSub{}
 
-// RegisterLoreSub adds (or replaces) a `lore` subcommand. Called from init for
-// core subcommands and by the host when a plugin contributes commands.
+// RegisterLoreSub adds (or replaces) a core `lore` subcommand.
 func RegisterLoreSub(sub LoreSub) {
 	loreSubs[sub.Name] = sub
 }
 
 // CmdLore is the `lore` introspection dispatcher. Bare `lore` prints usage and
 // exits 0; an unknown subcommand errors to stderr and exits 1. Subcommands are
-// resolved from the loreSubs registry, so plugins can extend the surface.
+// resolved from the loreSubs registry.
 func CmdLore(ctx CmdContext, args []string, w io.Writer, errW io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		printLoreUsage(w)

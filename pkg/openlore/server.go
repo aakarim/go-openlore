@@ -21,6 +21,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/passkeys"
 	"github.com/aakarim/go-openlore/internal/skills"
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/shell"
 	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
@@ -86,6 +87,7 @@ type Server struct {
 	// installed per session in buildSessionShell.
 	metaExtenders []meta.Extender
 	metaFilters   []meta.Filter
+	validators    []validation.Validator
 
 	// postCommitMW is the post-commit middleware contributed by plugins, run at
 	// the applier after a durable commit (feed emit, post_write hooks) in
@@ -711,16 +713,14 @@ func (s *Server) registerPlugin(p any) error {
 			s.grants.register(g)
 		}
 	}
-	if cp, ok := p.(CommandProvider); ok {
-		for _, c := range cp.LoreCommands() {
-			cmds.RegisterLoreSub(c)
-		}
-	}
 	if mp, ok := p.(MetaExtenderProvider); ok {
 		s.metaExtenders = append(s.metaExtenders, mp.MetaExtenders()...)
 	}
 	if fp, ok := p.(MetaFilterProvider); ok {
 		s.metaFilters = append(s.metaFilters, fp.MetaFilters()...)
+	}
+	if vp, ok := p.(ValidatorProvider); ok {
+		s.validators = append(s.validators, vp.Validators()...)
 	}
 	// Record the plugin's identity + version in the boot logs. Logged per
 	// registration so it captures plugins registered after NewServer (e.g. the
@@ -910,6 +910,7 @@ func (s *Server) buildSessionShell(id Identity) *shell.Shell {
 	sh.SetMetaFilters(s.sessionMetaFilters(id))
 	sh.SetPublishTargets(s.sessionPublishTargets(id))
 	sh.SetMetaExtenders(s.metaExtenders)
+	sh.SetValidators(s.validators)
 
 	// Set identity info as environment variables
 	if id.IdentityName != "" {
