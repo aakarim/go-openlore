@@ -100,7 +100,7 @@ func mint(t *testing.T, s *Server, sub, scope string) string {
 
 func TestAuthMiddleware_KeylessNoTokenIsAnonymous(t *testing.T) {
 	s := newTokenTestServer(t, true, "allow")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), false)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mcp", nil))
@@ -113,9 +113,24 @@ func TestAuthMiddleware_KeylessNoTokenIsAnonymous(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_RequiredOverrideChallengesKeylessCaller(t *testing.T) {
+	s := newTokenTestServer(t, true, "allow")
+	h := s.authMiddleware(s.identityEcho(), true)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if challenge := rec.Header().Get("WWW-Authenticate"); !strings.Contains(challenge, "resource_metadata=") {
+		t.Fatalf("WWW-Authenticate = %q, want OAuth resource metadata challenge", challenge)
+	}
+}
+
 func TestAuthMiddleware_ValidTokenResolvesIdentity(t *testing.T) {
 	s := newTokenTestServer(t, true, "allow")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), false)
 
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+mint(t, s, "alice", ScopeFull))
@@ -132,7 +147,7 @@ func TestAuthMiddleware_ValidTokenResolvesIdentity(t *testing.T) {
 
 func TestAuthMiddleware_InvalidTokenRejectedEvenKeyless(t *testing.T) {
 	s := newTokenTestServer(t, true, "allow")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), false)
 
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer not-a-real-token")
@@ -146,7 +161,7 @@ func TestAuthMiddleware_InvalidTokenRejectedEvenKeyless(t *testing.T) {
 
 func TestAuthMiddleware_RequiredPostureRejectsMissingToken(t *testing.T) {
 	s := newTokenTestServer(t, false, "deny")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), true)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mcp", nil))
@@ -167,7 +182,7 @@ func TestAuthMiddleware_RequiredPostureRejectsMissingToken(t *testing.T) {
 
 func TestAuthMiddleware_UnknownSubDenyIs403(t *testing.T) {
 	s := newTokenTestServer(t, false, "deny")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), true)
 
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+mint(t, s, "nobody", ScopeFull))
@@ -181,7 +196,7 @@ func TestAuthMiddleware_UnknownSubDenyIs403(t *testing.T) {
 
 func TestAuthMiddleware_AnonymousTokenResolvesToDefault(t *testing.T) {
 	s := newTokenTestServer(t, true, "allow")
-	h := s.authMiddleware(s.identityEcho())
+	h := s.authMiddleware(s.identityEcho(), false)
 
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+mint(t, s, anonymousSubject, ScopeFull))

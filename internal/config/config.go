@@ -37,6 +37,10 @@ type Config struct {
 	// Default true. The endpoint is mounted at MCPPath on the HTTP server.
 	MCPEnabled bool
 	MCPPath    string
+	// MCPRequireAuth overrides the SSH-derived authentication posture for the
+	// MCP endpoint. Nil inherits !AllowKeyless; true forces OAuth so clients
+	// such as Claude open the browser login flow.
+	MCPRequireAuth *bool
 	// APIEnabled controls whether the plain JSON HTTP API (backed by the MCP
 	// server) runs. Default true. It is mounted at APIPath on the HTTP server.
 	APIEnabled   bool
@@ -365,8 +369,9 @@ type fileConfig struct {
 }
 
 type mcpYAML struct {
-	Enabled *bool  `yaml:"enabled"`
-	Path    string `yaml:"path"`
+	Enabled     *bool  `yaml:"enabled"`
+	Path        string `yaml:"path"`
+	RequireAuth *bool  `yaml:"require_auth"`
 }
 
 type apiYAML struct {
@@ -430,6 +435,9 @@ func New(opts ...Option) (Config, error) {
 
 	if cfg.configFileLoaded && cfg.embeddedConfigUsed {
 		return Config{}, errors.New("conflict: cannot use both a config file and embedded config")
+	}
+	if cfg.MCPEnabled && cfg.MCPRequireAuth != nil && *cfg.MCPRequireAuth && cfg.Tokens == nil {
+		return Config{}, errors.New("mcp.require_auth requires tokens to be configured")
 	}
 
 	return cfg, nil
@@ -848,6 +856,18 @@ func applyMCPConfig(cfg *Config, m *mcpYAML) {
 	if m.Path != "" {
 		cfg.MCPPath = m.Path
 	}
+	if m.RequireAuth != nil {
+		cfg.MCPRequireAuth = m.RequireAuth
+	}
+}
+
+// MCPAuthRequired resolves the MCP-specific override. When it is omitted, MCP
+// retains the historical behavior of mirroring the SSH keyless posture.
+func (cfg Config) MCPAuthRequired() bool {
+	if cfg.MCPRequireAuth != nil {
+		return *cfg.MCPRequireAuth
+	}
+	return !cfg.AllowKeyless
 }
 
 // WithMCPPath sets the path the MCP-over-HTTP endpoint is mounted at on the

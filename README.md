@@ -646,7 +646,12 @@ TLS-terminating proxy this is `https://your-host/mcp`). Configure it via
 mcp:
   enabled: true   # on by default; set false to disable
   path: /mcp      # path on the HTTP server
+  require_auth: true # force OAuth login instead of anonymous access
 ```
+
+Omit `require_auth` to inherit the SSH posture from `allow_keyless`. Set it to
+`true` to make OAuth-native clients open the browser login flow while retaining
+keyless SSH access, or `false` to permit anonymous MCP when SSH requires a key.
 
 Or with flags: `--mcp-path /custom` to change the path. The endpoint requires
 the HTTP server (`--http-port`) to be enabled.
