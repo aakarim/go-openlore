@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -155,10 +156,10 @@ func (c *frozenContext) ActionAllowed(Action) bool { return true }
 func (c *frozenContext) WriteConflictPolicy(string) vfs.WriteConflictPolicy {
 	return c.policy
 }
-func (c *frozenContext) Docsets() []DocsetInfo           { return nil }
-func (c *frozenContext) PublishTargets() []PublishTarget { return nil }
-func (c *frozenContext) MetaExtenders() []meta.Extender  { return nil }
-func (c *frozenContext) MetaFilters() []meta.Filter      { return nil }
-func (c *frozenContext) LoreCommands() []LoreSub         { return nil }
+func (c *frozenContext) Docsets() []DocsetInfo              { return nil }
+func (c *frozenContext) PublishTargets() []PublishTarget    { return nil }
+func (c *frozenContext) MetaExtenders() []meta.Extender     { return nil }
+func (c *frozenContext) MetaFilters() []meta.Filter         { return nil }
+func (c *frozenContext) Validators() []validation.Validator { return nil }
 
 var _ CmdContext = (*frozenContext)(nil)

@@ -389,15 +389,15 @@ registration. A plugin implements one or more provider interfaces:
 | `ReadMiddlewareProvider` | before-read middleware |
 | `PostCommitProvider` | post-commit middleware |
 | `GrantTypeProvider` | named grant types (e.g. `publish`) |
-| `CommandProvider` | `lore` subcommands (`LoreCommands() []cmds.LoreSub`) |
+| `ValidatorProvider` | checks run by the core `lore validate` command |
 | `MetaExtenderProvider` | fields added to `lore meta` records |
 | `PluginInfoProvider` | plugin name + version (`Info() PluginInfo`), logged at boot |
 
 Built-in plugins (`shellexec`, `inbox`, `okf`) are wired from config; consumers
 add their own via `Server.RegisterPlugin`. A plugin can extend the introspection
-surface without the `lore` dispatcher knowing about it: `CommandProvider` adds
-whole subcommands, and `MetaExtenderProvider` enriches an existing command's
-output (the okf plugin uses it to annotate `lore meta` — see below).
+surface without owning commands: `ValidatorProvider` extends the core-owned
+`lore validate` command, and `MetaExtenderProvider` enriches the core-owned
+`lore meta` command (the okf plugin provides both — see below).
 
 Every built-in plugin reports a name and semantic version via
 `PluginInfoProvider`, recorded in the server's boot logs as it registers, so it
@@ -465,9 +465,10 @@ if err := okf.Validate(path, content); err != nil {
 
 ### `lore validate` — bundle linter
 
-When the OKF plugin is enabled, `lore validate [bundle]` scans the bundle
-directory (the current directory by default) and prints every finding in a
-grep-friendly format:
+`lore validate [bundle]` is a core command. It scans the bundle directory (the
+current directory by default), runs validators contributed by enabled plugins,
+and prints every finding in a grep-friendly format. The built-in OKF plugin
+contributes the initial validator:
 
 ```text
 tables/orders.md:1:1: error [okf/concept] frontmatter is missing the required non-empty 'type' field

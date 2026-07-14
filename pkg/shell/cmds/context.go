@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -42,10 +43,8 @@ type CmdContext interface {
 	// shell returns nil.
 	MetaExtenders() []meta.Extender
 	MetaFilters() []meta.Filter
-	// LoreCommands reports plugin-contributed lore subcommands installed for
-	// this session. Commands are session-local so one server cannot overwrite
-	// another server's plugin state in the process-wide core registry.
-	LoreCommands() []LoreSub
+	// Validators reports plugin-contributed checks used by `lore validate`.
+	Validators() []validation.Validator
 }
 
 // DocsetInfo describes one docset a session can access. It is the per-session

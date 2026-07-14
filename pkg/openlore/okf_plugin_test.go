@@ -12,7 +12,6 @@ import (
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/shell"
-	"github.com/aakarim/go-openlore/pkg/shell/cmds"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -367,12 +366,18 @@ func TestOKFPlugin_ValidateCommandListsAllErrorsAndAliasWarnings(t *testing.T) {
 	write("target.md", validDoc)
 	write("invalid.md", invalidDoc)
 
+	docsets := docsWithOKF()
+	docset := docsets["docs"]
+	docset.Paths = []config.PathMapping{{Source: "/wiki", Display: "/wiki"}}
+	docset.Aliases = []string{"/docs"}
+	docsets["docs"] = docset
+	plugin := pluginWith(docsets)
 	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
 	sh.SetCwd("/docs")
-	sh.SetDocsets([]cmds.DocsetInfo{{Name: "wiki", Paths: []string{"/docs"}, AliasTarget: "/wiki", Grant: "ro"}})
+	sh.SetValidators(plugin.Validators())
 
 	var out, errOut bytes.Buffer
-	code := runValidate(sh, nil, &out, &errOut, nil)
+	code := sh.ExecPipeline("lore validate", &out, &errOut, nil)
 	if code != 1 {
 		t.Fatalf("exit=%d, want 1; stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
@@ -396,9 +401,10 @@ func TestOKFPlugin_ValidateCommandSucceedsForPortableBundle(t *testing.T) {
 	}
 	sh := shell.NewShell(NewDirFS(dir, config.FilesConfig{}))
 	sh.SetCwd("/")
+	sh.SetValidators(pluginWith(docsWithOKF()).Validators())
 
 	var out, errOut bytes.Buffer
-	if code := runValidate(sh, nil, &out, &errOut, nil); code != 0 {
+	if code := sh.ExecPipeline("lore validate", &out, &errOut, nil); code != 0 {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	if out.String() != "0 errors, 0 warnings\n" {
@@ -406,18 +412,20 @@ func TestOKFPlugin_ValidateCommandSucceedsForPortableBundle(t *testing.T) {
 	}
 }
 
-func TestRegisterPlugin_ValidateCommandIsSessionLocal(t *testing.T) {
+func TestRegisterPlugin_ValidateCommandIsCoreAndValidatorsAreSessionLocal(t *testing.T) {
 	withOKF := &Server{}
 	if err := withOKF.registerPlugin(pluginWith(docsWithOKF())); err != nil {
 		t.Fatal(err)
 	}
-	withoutOKF := &Server{}
 
-	fsys := NewDirFS(t.TempDir(), config.FilesConfig{})
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "invalid.md"), []byte(invalidDoc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fsys := NewDirFS(dir, config.FilesConfig{})
 	withShell := shell.NewShell(fsys)
-	withShell.SetLoreCommands(withOKF.loreCommands)
+	withShell.SetValidators(withOKF.validators)
 	withoutShell := shell.NewShell(fsys)
-	withoutShell.SetLoreCommands(withoutOKF.loreCommands)
 
 	var withOut, withoutOut, errOut bytes.Buffer
 	if code := withShell.ExecPipeline("lore", &withOut, &errOut, nil); code != 0 {
@@ -426,10 +434,18 @@ func TestRegisterPlugin_ValidateCommandIsSessionLocal(t *testing.T) {
 	if code := withoutShell.ExecPipeline("lore", &withoutOut, &errOut, nil); code != 0 {
 		t.Fatalf("lore without plugin exit=%d: %s", code, errOut.String())
 	}
-	if !strings.Contains(withOut.String(), "validate") {
-		t.Fatalf("plugin session missing validate command:\n%s", withOut.String())
+	if !strings.Contains(withOut.String(), "validate") || !strings.Contains(withoutOut.String(), "validate") {
+		t.Fatalf("core validate command missing: with plugin:\n%s\nwithout plugin:\n%s", withOut.String(), withoutOut.String())
 	}
-	if strings.Contains(withoutOut.String(), "validate") {
-		t.Fatalf("validate leaked into session without plugin:\n%s", withoutOut.String())
+	withOut.Reset()
+	withoutOut.Reset()
+	if code := withShell.ExecPipeline("lore validate", &withOut, &errOut, nil); code != 1 {
+		t.Fatalf("with plugin exit=%d, want 1: %s", code, withOut.String())
+	}
+	if code := withoutShell.ExecPipeline("lore validate", &withoutOut, &errOut, nil); code != 0 {
+		t.Fatalf("without plugin exit=%d, want 0: %s", code, withoutOut.String())
+	}
+	if !strings.Contains(withOut.String(), "okf/concept") || withoutOut.String() != "0 errors, 0 warnings\n" {
+		t.Fatalf("validators not session-local: with=%q without=%q", withOut.String(), withoutOut.String())
 	}
 }

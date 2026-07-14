@@ -3,7 +3,6 @@ package openlore
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"path"
 	"sort"
@@ -12,7 +11,7 @@ import (
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/okf"
 	"github.com/aakarim/go-openlore/pkg/openlore/meta"
-	"github.com/aakarim/go-openlore/pkg/shell/cmds"
+	"github.com/aakarim/go-openlore/pkg/openlore/validation"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 )
 
@@ -156,159 +155,63 @@ func (p *okfPlugin) MetaExtenders() []meta.Extender {
 	}
 }
 
-// LoreCommands implements CommandProvider. Validation is read-only and runs on
-// the session filesystem, so it cannot inspect documents outside the caller's
-// grants. OKF conformance comes from pkg/okf; link and alias checks are
-// OpenLore operational diagnostics layered on top.
-func (p *okfPlugin) LoreCommands() []cmds.LoreSub {
-	return []cmds.LoreSub{{
-		Name:    "validate",
-		Summary: "Lint an OKF bundle, its local links, and path portability",
-		Run:     runValidate,
+// Validators implements ValidatorProvider. The command and filesystem scan are
+// owned by core; the plugin contributes OKF conformance plus OpenLore's
+// operational link and alias-portability checks.
+func (p *okfPlugin) Validators() []validation.Validator {
+	aliasRoots := p.aliasRoots()
+	return []validation.Validator{func(bundle validation.Bundle) []validation.Diagnostic {
+		files := make([]okf.File, 0, len(bundle.Files))
+		for _, file := range bundle.Files {
+			files = append(files, okf.File{Path: file.Path, Content: file.Content})
+		}
+		okfDiagnostics := okf.ValidateBundle(files)
+		diagnostics := make([]validation.Diagnostic, 0, len(okfDiagnostics))
+		for _, diagnostic := range okfDiagnostics {
+			diagnostics = append(diagnostics, fromOKFDiagnostic(diagnostic))
+		}
+		for _, file := range bundle.Files {
+			if path.Ext(file.Path) != ".md" {
+				continue
+			}
+			for _, link := range okf.Links(file.Content) {
+				local, ok := okf.LocalLinkPath(link.Destination)
+				if !ok {
+					continue
+				}
+				target := path.Join(path.Dir(file.AbsolutePath), local)
+				if strings.HasPrefix(local, "/") {
+					target = path.Join(bundle.Root, strings.TrimPrefix(local, "/"))
+				}
+				target = vfs.CleanPath(target)
+				if !pathWithinRoot(bundle.Root, target) {
+					diagnostics = append(diagnostics, openLoreDiagnostic(file.Path, link, validation.SeverityError,
+						"openlore/link-outside-bundle", fmt.Sprintf("local link %q resolves outside the bundle", link.Destination)))
+				} else if _, err := bundle.FS.Stat(target); err != nil {
+					diagnostics = append(diagnostics, openLoreDiagnostic(file.Path, link, validation.SeverityError,
+						"openlore/broken-link", fmt.Sprintf("local link %q does not resolve", link.Destination)))
+				}
+				if aliasRoot(file.AbsolutePath, aliasRoots) != "" {
+					diagnostics = append(diagnostics, openLoreDiagnostic(file.Path, link, validation.SeverityWarning,
+						"openlore/alias-referrer", "link originates from an aliased docset path; use a stable checkout path"))
+				}
+				if alias := aliasRoot(target, aliasRoots); alias != "" {
+					diagnostics = append(diagnostics, openLoreDiagnostic(file.Path, link, validation.SeverityWarning,
+						"openlore/alias-target", fmt.Sprintf("link targets aliased docset path %s; it may resolve differently on another machine", alias)))
+				}
+			}
+		}
+		return diagnostics
 	}}
 }
 
-func runValidate(ctx cmds.CmdContext, args []string, w io.Writer, errW io.Writer, _ io.Reader) int {
-	root := ctx.Cwd()
-	if len(args) > 1 {
-		fmt.Fprintln(errW, "Usage: lore validate [bundle]")
-		return 1
-	}
-	if len(args) == 1 {
-		if strings.HasPrefix(args[0], "-") {
-			fmt.Fprintf(errW, "lore validate: unknown flag %q\n", args[0])
-			return 1
-		}
-		root = ctx.Resolve(args[0])
-	}
-	root = vfs.CleanPath(root)
-	info, err := ctx.FS().Stat(root)
-	if err != nil {
-		fmt.Fprintf(errW, "lore validate: %s\n", err)
-		return 1
-	}
-	if !info.Dir {
-		fmt.Fprintf(errW, "lore validate: %s is not a bundle directory\n", root)
-		return 1
-	}
-
-	type scannedFile struct {
-		absolute string
-		relative string
-		content  []byte
-	}
-	var scanned []scannedFile
-	err = vfs.WalkDir(ctx.FS(), root, func(filePath string, info *vfs.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info == nil || info.Dir || path.Ext(info.FileName) != ".md" {
-			return nil
-		}
-		content, err := ctx.FS().ReadFile(filePath)
-		if err != nil {
-			return err
-		}
-		scanned = append(scanned, scannedFile{
-			absolute: vfs.CleanPath(filePath),
-			relative: relativeBundlePath(root, filePath),
-			content:  content,
-		})
-		return nil
-	})
-	if err != nil {
-		fmt.Fprintf(errW, "lore validate: %s\n", err)
-		return 1
-	}
-
-	files := make([]okf.File, 0, len(scanned))
-	for _, file := range scanned {
-		files = append(files, okf.File{Path: file.relative, Content: file.content})
-	}
-	diagnostics := okf.ValidateBundle(files)
-	aliasRoots := accessibleAliasRoots(ctx.Docsets())
-	for _, file := range scanned {
-		for _, link := range okf.Links(file.content) {
-			local, ok := okf.LocalLinkPath(link.Destination)
-			if !ok {
-				continue
-			}
-			target := path.Join(path.Dir(file.absolute), local)
-			if strings.HasPrefix(local, "/") {
-				target = path.Join(root, strings.TrimPrefix(local, "/"))
-			}
-			target = vfs.CleanPath(target)
-			if !pathWithinRoot(root, target) {
-				diagnostics = append(diagnostics, openLoreDiagnostic(file.relative, link, okf.SeverityError,
-					"openlore/link-outside-bundle", fmt.Sprintf("local link %q resolves outside the bundle", link.Destination)))
-			} else if _, err := ctx.FS().Stat(target); err != nil {
-				diagnostics = append(diagnostics, openLoreDiagnostic(file.relative, link, okf.SeverityError,
-					"openlore/broken-link", fmt.Sprintf("local link %q does not resolve", link.Destination)))
-			}
-			if aliasRoot(file.absolute, aliasRoots) != "" {
-				diagnostics = append(diagnostics, openLoreDiagnostic(file.relative, link, okf.SeverityWarning,
-					"openlore/alias-referrer", "link originates from an aliased docset path; use a stable checkout path"))
-			}
-			if alias := aliasRoot(target, aliasRoots); alias != "" {
-				diagnostics = append(diagnostics, openLoreDiagnostic(file.relative, link, okf.SeverityWarning,
-					"openlore/alias-target", fmt.Sprintf("link targets aliased docset path %s; it may resolve differently on another machine", alias)))
-			}
-		}
-	}
-
-	sort.SliceStable(diagnostics, func(i, j int) bool {
-		if diagnostics[i].Path != diagnostics[j].Path {
-			return diagnostics[i].Path < diagnostics[j].Path
-		}
-		if diagnostics[i].Line != diagnostics[j].Line {
-			return diagnostics[i].Line < diagnostics[j].Line
-		}
-		if diagnostics[i].Column != diagnostics[j].Column {
-			return diagnostics[i].Column < diagnostics[j].Column
-		}
-		return diagnostics[i].Rule < diagnostics[j].Rule
-	})
-	errors, warnings := 0, 0
-	for _, diagnostic := range diagnostics {
-		fmt.Fprintln(w, okf.FormatDiagnostic(diagnostic))
-		if diagnostic.Severity == okf.SeverityError {
-			errors++
-		} else {
-			warnings++
-		}
-	}
-	fmt.Fprintf(w, "%d %s, %d %s\n", errors, countLabel(errors, "error"), warnings, countLabel(warnings, "warning"))
-	if errors > 0 {
-		return 1
-	}
-	return 0
-}
-
-func countLabel(count int, singular string) string {
-	if count == 1 {
-		return singular
-	}
-	return singular + "s"
-}
-
-func accessibleAliasRoots(docsets []cmds.DocsetInfo) []string {
+func (p *okfPlugin) aliasRoots() []string {
 	var roots []string
-	for _, docset := range docsets {
-		if docset.AliasTarget != "" {
-			roots = append(roots, docset.Paths...)
-		}
+	for _, docset := range p.docsets {
+		roots = append(roots, docset.Aliases...)
 	}
 	sort.Slice(roots, func(i, j int) bool { return len(roots[i]) > len(roots[j]) })
 	return roots
-}
-
-func relativeBundlePath(root, filePath string) string {
-	root = vfs.CleanPath(root)
-	filePath = vfs.CleanPath(filePath)
-	if root == "/" {
-		return strings.TrimPrefix(filePath, "/")
-	}
-	return strings.TrimPrefix(filePath, root+"/")
 }
 
 func aliasRoot(filePath string, roots []string) string {
@@ -320,10 +223,17 @@ func aliasRoot(filePath string, roots []string) string {
 	return ""
 }
 
-func openLoreDiagnostic(filePath string, link okf.Link, severity okf.Severity, rule, message string) okf.Diagnostic {
-	return okf.Diagnostic{
+func openLoreDiagnostic(filePath string, link okf.Link, severity validation.Severity, rule, message string) validation.Diagnostic {
+	return validation.Diagnostic{
 		Path: filePath, Line: link.Line, Column: link.Column,
 		Severity: severity, Rule: rule, Message: message,
+	}
+}
+
+func fromOKFDiagnostic(diagnostic okf.Diagnostic) validation.Diagnostic {
+	return validation.Diagnostic{
+		Path: diagnostic.Path, Line: diagnostic.Line, Column: diagnostic.Column,
+		Severity: validation.Severity(diagnostic.Severity), Rule: diagnostic.Rule, Message: diagnostic.Message,
 	}
 }
 
@@ -336,6 +246,6 @@ func (p *okfPlugin) Info() PluginInfo {
 var (
 	_ WriteMiddlewareProvider = (*okfPlugin)(nil)
 	_ MetaExtenderProvider    = (*okfPlugin)(nil)
-	_ CommandProvider         = (*okfPlugin)(nil)
+	_ ValidatorProvider       = (*okfPlugin)(nil)
 	_ PluginInfoProvider      = (*okfPlugin)(nil)
 )
