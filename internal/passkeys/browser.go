@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aakarim/go-openlore/pkg/okf"
 	"github.com/aakarim/go-openlore/pkg/vfs"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -129,14 +130,24 @@ func isMarkdown(filePath string) bool {
 }
 
 func renderMarkdown(w http.ResponseWriter, source []byte) error {
+	frontmatter, markdown, hasFrontmatter := okf.SplitFrontmatter(source)
+	if !hasFrontmatter {
+		markdown = source
+	}
+
 	var rendered bytes.Buffer
 	md := goldmark.New(goldmark.WithExtensions(extension.GFM))
-	if err := md.Convert(source, &rendered); err != nil {
+	if err := md.Convert(markdown, &rendered); err != nil {
 		return err
 	}
 
+	var formattedFrontmatter string
+	if hasFrontmatter {
+		formattedFrontmatter = `<section class="frontmatter" aria-label="Frontmatter"><div class="frontmatter-title">Frontmatter</div><pre><code>` + html.EscapeString(strings.TrimSpace(string(frontmatter))) + `</code></pre></section>`
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, err := fmt.Fprintf(w, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><base target="_top"><meta name="viewport" content="width=device-width, initial-scale=1"><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{max-width:860px;margin:0 auto;padding:2.5rem 2rem;font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;background:#fff}h1,h2{border-bottom:1px solid #d0d7de;padding-bottom:.3em}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .65em}h1:first-child{margin-top:0}a{color:#0969da}pre{overflow:auto;padding:1rem;border-radius:6px;background:#f6f8fa}code{font:85%% SFMono-Regular,Consolas,'Liberation Mono',monospace;background:#eff1f3;padding:.2em .4em;border-radius:4px}pre code{background:transparent;padding:0}blockquote{margin-left:0;padding-left:1em;border-left:4px solid #d0d7de;color:#59636e}img{max-width:100%%}table{border-collapse:collapse;display:block;overflow:auto}th,td{padding:.4rem .8rem;border:1px solid #d0d7de}tr:nth-child(2n){background:#f6f8fa}hr{border:0;border-top:1px solid #d0d7de}@media(prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}a{color:#58a6ff}h1,h2,hr{border-color:#30363d}pre,code,tr:nth-child(2n){background:#161b22}blockquote{border-color:#3d444d;color:#9198a1}th,td{border-color:#3d444d}}</style></head><body>%s</body></html>`, rendered.String())
+	_, err := fmt.Fprintf(w, `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><base target="_top"><meta name="viewport" content="width=device-width, initial-scale=1"><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{max-width:860px;margin:0 auto;padding:2.5rem 2rem;font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1f2328;background:#fff}h1,h2{border-bottom:1px solid #d0d7de;padding-bottom:.3em}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .65em}h1:first-child{margin-top:0}a{color:#0969da}pre{overflow:auto;padding:1rem;border-radius:6px;background:#f6f8fa}code{font:85%% SFMono-Regular,Consolas,'Liberation Mono',monospace;background:#eff1f3;padding:.2em .4em;border-radius:4px}pre code{background:transparent;padding:0}.frontmatter{margin:0 0 2rem;border:1px solid #d0d7de;border-radius:6px;overflow:hidden}.frontmatter-title{padding:.45rem .8rem;border-bottom:1px solid #d0d7de;background:#f6f8fa;color:#59636e;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.frontmatter pre{margin:0;border-radius:0}blockquote{margin-left:0;padding-left:1em;border-left:4px solid #d0d7de;color:#59636e}img{max-width:100%%}table{border-collapse:collapse;display:block;overflow:auto}th,td{padding:.4rem .8rem;border:1px solid #d0d7de}tr:nth-child(2n){background:#f6f8fa}hr{border:0;border-top:1px solid #d0d7de}@media(prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}a{color:#58a6ff}h1,h2,hr{border-color:#30363d}pre,code,tr:nth-child(2n),.frontmatter-title{background:#161b22}.frontmatter,.frontmatter-title{border-color:#30363d}.frontmatter-title,blockquote{color:#9198a1}blockquote{border-color:#3d444d}th,td{border-color:#3d444d}}</style></head><body>%s%s</body></html>`, formattedFrontmatter, rendered.String())
 	return err
 }
 
