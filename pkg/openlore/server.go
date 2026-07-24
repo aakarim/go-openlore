@@ -768,22 +768,27 @@ func (s *Server) postCommitChain() PostCommitHandler {
 // OPENLORE_* environment variables. This is the single source of truth for
 // per-identity scoping, shared by the SSH shell handler and the MCP/HTTP tool
 // handlers so all transports enforce the same access rules.
-// buildSessionFS constructs the per-session filesystem for an identity: read
-// scoping to the identity's readable roots, the read/write middleware chains,
-// per-op write authorization by grant, and session CAS tracking. It is the
-// single source of the layered VFS shared by both the interactive shell and the
-// SFTP subsystem so both enforce identical read scoping and write authorization.
+// buildSessionFS constructs the per-session filesystem for an identity and
+// exposes its configured path aliases for filesystem-oriented transports.
 func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
-	if s.authEnforced && id.policySnapshot == nil {
-		if policy, err := s.currentPolicy(id); err == nil {
-			id.policySnapshot = &policy
-			id.HomeDocset = policy.HomeDocset
-			id.HomeDir = s.resolveHomeDir(policy.HomeDocset)
-		} else {
-			deny := AuthorizationPolicy{}
-			id.policySnapshot = &deny
-		}
+	id = s.resolveSessionIdentity(id)
+	sessionFS := s.buildCanonicalSessionFS(id)
+	// Expose this identity's aliases outermost so callers can retain the alias
+	// spelling while every internal operation, including CAS tracking, sees the
+	// canonical path. Ungranted aliases are never added to the session tree.
+	if aliases := s.aliasesForIdentity(id); len(aliases) > 0 {
+		sessionFS = newAliasFS(sessionFS, aliases)
 	}
+	return sessionFS
+}
+
+// buildCanonicalSessionFS constructs the per-session filesystem without path
+// aliases. The web browser uses this view so its folder tree presents each
+// docset only once; filesystem-oriented transports decorate it with aliases in
+// buildSessionFS.
+func (s *Server) buildCanonicalSessionFS(id Identity) vfs.FileSystem {
+	id = s.resolveSessionIdentity(id)
+
 	// Build per-session filesystem scoped to the identity's readable roots.
 	// Docsets are display-path subtrees of a shared backing filesystem, so read
 	// scoping is by path (not mount name): a session only sees the docsets it
@@ -844,13 +849,21 @@ func (s *Server) buildSessionFS(id Identity) vfs.FileSystem {
 			sessionFS = newReadTrackingFS(w)
 		}
 	}
-	// Expose this identity's aliases outermost so callers can retain the alias
-	// spelling while every internal operation, including CAS tracking, sees the
-	// canonical path. Ungranted aliases are never added to the session tree.
-	if aliases := s.aliasesForIdentity(id); len(aliases) > 0 {
-		sessionFS = newAliasFS(sessionFS, aliases)
-	}
 	return sessionFS
+}
+
+func (s *Server) resolveSessionIdentity(id Identity) Identity {
+	if s.authEnforced && id.policySnapshot == nil {
+		if policy, err := s.currentPolicy(id); err == nil {
+			id.policySnapshot = &policy
+			id.HomeDocset = policy.HomeDocset
+			id.HomeDir = s.resolveHomeDir(policy.HomeDocset)
+		} else {
+			deny := AuthorizationPolicy{}
+			id.policySnapshot = &deny
+		}
+	}
+	return id
 }
 
 func (s *Server) buildSessionShell(id Identity) *shell.Shell {
@@ -1383,16 +1396,17 @@ func (s *Server) ListenAndServe() error {
 				}
 				lorePath = "/" + strings.Trim(lorePath, "/")
 				// The /lore web browser reads through the same per-identity
-				// scoped session FS as every other transport, so docset
+				// scoped canonical FS as every other transport, so docset
 				// boundaries (including nested-docset carve-outs) are enforced
-				// identically. An unresolved identity falls back to the
-				// anonymous/default authority.
+				// identically, without exposing filesystem path aliases in the
+				// human-facing folder tree. An unresolved identity falls back to
+				// the anonymous/default authority.
 				httpCfg.ExtraHandlers[lorePath+"/"] = s.passkeys.LoreBrowserHandler(func(name string) vfs.FileSystem {
 					id, ok := s.identityForName(name)
 					if !ok {
 						id = s.anonymousIdentity()
 					}
-					return s.buildSessionFS(id)
+					return s.buildCanonicalSessionFS(id)
 				})
 
 				cmds.PublishBaseURL = baseURL + lorePath

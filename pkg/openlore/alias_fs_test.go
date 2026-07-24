@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/aakarim/go-openlore/internal/config"
 	"github.com/aakarim/go-openlore/pkg/shell"
@@ -56,6 +57,33 @@ func TestAliasFS_ReadsListsAndWritesCanonicalStorage(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(canonicalDir, "new.md"))
 	if err != nil || string(got) != "new" {
 		t.Fatalf("canonical file after alias write = %q, %v", got, err)
+	}
+}
+
+func TestBuildCanonicalSessionFSOmitsAliases(t *testing.T) {
+	s := grantTestServer()
+	merge := NewMergeFS()
+	merge.SetRoot(NewFSAdapter(fstest.MapFS{
+		"agent/jared/note.md": {Data: []byte("hello")},
+	}))
+	s.merge = merge
+	ds := s.auth.Docsets["alfie"]
+	ds.Paths = []config.PathMapping{{Source: "/agent/jared", Display: "/agent/jared"}}
+	ds.Aliases = []string{"/jared"}
+	s.auth.Docsets["alfie"] = ds
+
+	id := identityWithPolicy("jared", "alfie-rw")
+	canonical := s.buildCanonicalSessionFS(id)
+	if _, err := canonical.ReadFile("/agent/jared/note.md"); err != nil {
+		t.Fatalf("canonical path should remain visible: %v", err)
+	}
+	if _, err := canonical.Stat("/jared"); err == nil {
+		t.Fatal("canonical session filesystem exposed alias")
+	}
+
+	aliased := s.buildSessionFS(id)
+	if got, err := aliased.ReadFile("/jared/note.md"); err != nil || string(got) != "hello" {
+		t.Fatalf("filesystem transports lost alias: %q, %v", got, err)
 	}
 }
 
